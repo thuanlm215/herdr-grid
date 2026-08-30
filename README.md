@@ -76,6 +76,38 @@ herdr plugin action invoke open --plugin herdr-grid
 The editor reads the tab underneath the popup and performs no writes until
 you apply the preview.
 
+### Optional shortcut: `prefix + t`
+
+Run the following block to bind `prefix + t` to the layout editor. It appends
+the binding without overwriting the rest of your Herdr configuration, avoids
+adding it twice, and stops if another command already uses the same key:
+
+```sh
+herdr_grid_config="${HERDR_CONFIG_PATH:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config.toml}"
+mkdir -p "$(dirname "$herdr_grid_config")"
+touch "$herdr_grid_config"
+
+if grep -Fq 'command = "herdr-grid.open"' "$herdr_grid_config"; then
+  echo "herdr-grid shortcut is already configured"
+elif grep -Eq '^[[:space:]]*key[[:space:]]*=[[:space:]]*"prefix\+t"' "$herdr_grid_config"; then
+  echo "prefix+t is already assigned; edit $herdr_grid_config manually" >&2
+  exit 1
+else
+  tee -a "$herdr_grid_config" >/dev/null <<'EOF'
+
+[[keys.command]]
+key = "prefix+t"
+type = "plugin_action"
+command = "herdr-grid.open"
+EOF
+  herdr config check
+  herdr server reload-config
+fi
+```
+
+Herdr's default prefix is `Ctrl+b`, so press `Ctrl+b`, release it, then press
+`t`. If you configured a different prefix, use that key followed by `t`.
+
 ### Controls
 
 | Input | Action |
