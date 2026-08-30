@@ -1,18 +1,27 @@
 # herdr-grid
 
 [![CI](https://github.com/thuanlm215/herdr-grid/actions/workflows/ci.yml/badge.svg)](https://github.com/thuanlm215/herdr-grid/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/thuanlm215/herdr-grid)](https://github.com/thuanlm215/herdr-grid/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A visual drag-and-drop layout editor for live [Herdr](https://herdr.dev/)
-panes.
+A visual layout editor for live [Herdr](https://herdr.dev/) panes. Drag to
+rearrange, resize splits, add shells, and apply fixed presets without
+restarting agents or losing pane state.
 
-`herdr-grid` opens as a popup for the active tab. Rearrange panes, resize
-splits, preview the result, and apply the complete layout without restarting
-the processes running inside those panes.
+## Quick start
 
-> [!IMPORTANT]
-> This project is under active development. Test it with a disposable Herdr
-> session before using it with important long-running processes.
+```sh
+herdr plugin install thuanlm215/herdr-grid
+herdr plugin action invoke open --plugin herdr-grid
+```
+
+The editor opens over the active tab and performs no writes until you press
+`Enter`. Existing PTYs, processes, scrollback, and pane identities are
+preserved. Apply validates the live layout and attempts recovery if an
+operation fails.
+
+Use `prefix + t` for one-key access after adding the optional binding described
+under [Usage](#optional-shortcut-prefix--t).
 
 ## Screenshots
 
