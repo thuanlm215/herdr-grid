@@ -14,13 +14,26 @@ the processes running inside those panes.
 > This project is under active development. Test it with a disposable Herdr
 > session before using it with important long-running processes.
 
+## Screenshots
+
+### Arrange and resize panes
+
+![Layout editor showing three live Herdr panes](docs/images/layout-editor.png)
+
+### Add shell panes
+
+Draft panes are highlighted in green and are created only when the completed
+preview is applied.
+
+![Add pane mode showing a green draft pane and edge controls](docs/images/add-pane-mode.png)
+
 ## Features
 
 - Drag a pane onto another pane to swap their positions.
 - Drop on an edge to create a new horizontal or vertical relationship.
 - Drag split dividers to resize panes.
 - Preview one or more new shell panes and create them together on Apply.
-- Use the same editor entirely from the keyboard.
+- Rearrange and resize the layout with keyboard controls.
 - Undo or reset changes before they reach Herdr.
 - Apply the preview explicitly with `Enter`; cancel safely with `Esc`.
 - Preserve live PTYs, pane identities, process state, and scrollback.
@@ -117,7 +130,7 @@ Herdr's default prefix is `Ctrl+b`, so press `Ctrl+b`, release it, then press
 | Drag pane to edge | Re-parent pane at that edge |
 | Drag divider | Resize a split |
 | Click pane | Select pane |
-| `n` | Enter or leave Add pane mode |
+| `n` | Enter Add pane mode |
 | Click pane, then edge `+` | Add a draft shell at that edge |
 | `d` in Add pane mode | Remove the selected draft pane |
 | `Enter` in Add pane mode | Keep drafts in the preview and return to normal mode |
@@ -176,16 +189,6 @@ structural experiments against the default session.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a change.
 Notable user-facing changes are recorded in [CHANGELOG.md](CHANGELOG.md).
-
-## Project status
-
-The core editor, direct swap/resize path, structural transaction engine, and
-failure reconciliation are implemented. Work remaining before the first
-stable release includes:
-
-- continuous stale-state indication while the popup remains open;
-- broader terminal and live-session compatibility testing;
-- release screenshots and a short demonstration recording.
 
 ## License
 
