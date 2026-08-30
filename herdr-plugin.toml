@@ -1,0 +1,22 @@
+id = "herdr-grid"
+name = "herdr-grid"
+version = "0.1.0"
+description = "Drag-and-drop editor for the active tab's live pane layout"
+min_herdr_version = "0.8.2"
+platforms = ["linux", "macos"]
+
+[[build]]
+platforms = ["linux", "macos"]
+command = ["cargo", "build", "--release", "--locked"]
+
+[[panes]]
+id = "grid"
+title = "Layout grid"
+placement = "popup"
+command = ["bash", "scripts/run-pane.sh"]
+
+[[actions]]
+id = "open"
+title = "Open layout editor"
+description = "Open the active tab layout editor in a popup."
+command = ["./target/release/herdr-grid", "--open-popup"]

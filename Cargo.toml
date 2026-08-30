@@ -1,0 +1,36 @@
+[package]
+name = "herdr-grid"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Safe visual layout editor for Herdr panes"
+readme = "README.md"
+repository = "https://github.com/thuanlm215/herdr-grid"
+homepage = "https://github.com/thuanlm215/herdr-grid"
+documentation = "https://github.com/thuanlm215/herdr-grid/tree/main/docs"
+keywords = ["terminal", "tui", "layout", "herdr"]
+categories = ["command-line-utilities"]
+exclude = [
+    ".ai/**",
+    ".codex/**",
+    "AGENTS.local.md",
+    "docs/IMPLEMENTATION.md",
+    "docs/PLAN.md",
+]
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
+fs2 = "0.4"
+ratatui = "0.30.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "net", "io-util", "sync"] }
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"
+toml = "0.8"

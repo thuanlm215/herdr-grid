@@ -1,0 +1,10 @@
+/target/
+*.log
+.DS_Store
+
+# Local AI and implementation working notes
+/docs/PLAN.md
+/docs/IMPLEMENTATION.md
+/.ai/
+/.codex/
+AGENTS.local.md
