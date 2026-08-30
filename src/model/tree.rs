@@ -50,6 +50,8 @@ pub enum ModelError {
     InvalidRatio,
     #[error("split path not found")]
     InvalidPath,
+    #[error("preset requires {expected} panes, got {actual}")]
+    WrongPaneCount { expected: usize, actual: usize },
 }
 
 impl LayoutNode {

@@ -25,11 +25,19 @@ pub struct AddZone {
     pub edge: Edge,
     pub rect: Rect,
 }
+#[derive(Clone, Debug, PartialEq)]
+pub struct PresetCardZone {
+    pub index: usize,
+    pub rect: Rect,
+}
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Geometry {
     pub panes: Vec<PaneRect>,
     pub dividers: Vec<Divider>,
     pub add_zones: Vec<AddZone>,
+    pub preset_cards: Vec<PresetCardZone>,
+    pub preset_destination: Option<Rect>,
+    pub preset_apply: Option<Rect>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Hit {
@@ -176,6 +184,19 @@ impl Geometry {
     }
     pub fn hit_add_zone(&self, x: u16, y: u16) -> Option<&AddZone> {
         self.add_zones.iter().find(|zone| inside(zone.rect, x, y))
+    }
+    pub fn hit_preset_card(&self, x: u16, y: u16) -> Option<usize> {
+        self.preset_cards
+            .iter()
+            .find(|zone| inside(zone.rect, x, y))
+            .map(|zone| zone.index)
+    }
+    pub fn hit_preset_destination(&self, x: u16, y: u16) -> bool {
+        self.preset_destination
+            .is_some_and(|rect| inside(rect, x, y))
+    }
+    pub fn hit_preset_apply(&self, x: u16, y: u16) -> bool {
+        self.preset_apply.is_some_and(|rect| inside(rect, x, y))
     }
 }
 fn inside(r: Rect, x: u16, y: u16) -> bool {

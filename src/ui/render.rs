@@ -1,7 +1,7 @@
 use crate::{
-    app::{App, DropPreview},
+    app::{App, DropPreview, PresetDestination},
     herdr::ApplyProgress,
-    model::{is_draft_pane, AddZone, Edge, Geometry, PaneRect, Rect},
+    model::{is_draft_pane, AddZone, Edge, Geometry, PaneRect, PresetCardZone, PresetKind, Rect},
 };
 use ratatui::{
     layout::{Alignment, Constraint, Layout},
@@ -57,7 +57,9 @@ pub fn draw(frame: &mut Frame, app: &App) -> Geometry {
         );
     }
 
-    let footer_style = if app.add_mode {
+    let footer_style = if app.pending_new_workspace {
+        Style::default().fg(Color::LightGreen).bold()
+    } else if app.add_mode {
         Style::default().fg(Color::LightCyan).bold()
     } else {
         Style::default()
@@ -71,10 +73,180 @@ pub fn draw(frame: &mut Frame, app: &App) -> Geometry {
         rows[2],
     );
 
-    if app.show_help {
+    if app.preset_picker.is_some() {
+        render_preset_picker(frame, app, &mut geo);
+    } else if app.show_help {
         render_help(frame);
     }
     geo
+}
+
+fn render_preset_picker(frame: &mut Frame, app: &App, geometry: &mut Geometry) {
+    let picker = app.preset_picker.as_ref().unwrap();
+    let area = centered_rect(84, 90, frame.area());
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(" Layout presets "),
+        area,
+    );
+    let inner = area.inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    let rows = Layout::vertical([
+        Constraint::Min(16),
+        Constraint::Length(2),
+        Constraint::Length(2),
+        Constraint::Length(2),
+    ])
+    .split(inner);
+
+    let card_rows = Layout::vertical([
+        Constraint::Ratio(1, 3),
+        Constraint::Ratio(1, 3),
+        Constraint::Ratio(1, 3),
+    ])
+    .split(rows[0]);
+    for (index, preset) in PresetKind::ALL.iter().copied().enumerate() {
+        let row = index / 3;
+        let column = index % 3;
+        let columns = Layout::horizontal([
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 3),
+        ])
+        .split(card_rows[row]);
+        let card = columns[column];
+        geometry.preset_cards.push(PresetCardZone {
+            index,
+            rect: Rect {
+                x: card.x,
+                y: card.y,
+                width: card.width,
+                height: card.height,
+            },
+        });
+        let enabled = app.preset_enabled(preset, picker.destination);
+        let selected = index == picker.selected;
+        let color = if !enabled {
+            Color::DarkGray
+        } else if selected {
+            Color::LightCyan
+        } else {
+            Color::Gray
+        };
+        frame.render_widget(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(color))
+                .title(format!(" {} · {} slots ", preset.title(), preset.slots())),
+            card,
+        );
+        if card.width > 6 && card.height > 3 {
+            let preview = card.inner(Margin {
+                horizontal: 2,
+                vertical: 1,
+            });
+            let preview = preset_preview_rect(preview, preset);
+            let ids = (1..=preset.slots())
+                .map(|slot| slot.to_string())
+                .collect::<Vec<_>>();
+            let tree = preset.build(&ids).unwrap();
+            let mini = Geometry::calculate(
+                &tree,
+                Rect {
+                    x: preview.x,
+                    y: preview.y,
+                    width: preview.width,
+                    height: preview.height,
+                },
+            );
+            for pane in mini.panes {
+                frame.render_widget(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(color))
+                        .title(pane.pane_id),
+                    to_ratatui(pane.rect),
+                );
+            }
+        }
+    }
+
+    let destination = match picker.destination {
+        PresetDestination::CurrentTab => "[ Current tab ]   New workspace",
+        PresetDestination::NewWorkspace => "  Current tab   [ New workspace ]",
+    };
+    let destination_style = match picker.destination {
+        PresetDestination::CurrentTab => Color::Cyan,
+        PresetDestination::NewWorkspace => Color::LightGreen,
+    };
+    frame.render_widget(
+        Paragraph::new(destination)
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(destination_style).bold()),
+        rows[1],
+    );
+    geometry.preset_destination = Some(from_ratatui(rows[1]));
+
+    let preset = PresetKind::ALL[picker.selected];
+    let enabled = app.preset_enabled(preset, picker.destination);
+    let detail = match picker.destination {
+        PresetDestination::CurrentTab => {
+            let count = app.preset_source_count();
+            if enabled {
+                format!(
+                    "Enter Preview · {} existing panes · creates {} shells",
+                    count,
+                    preset.slots().saturating_sub(count)
+                )
+            } else {
+                format!(
+                    "Unavailable · {} panes cannot fit in {} slots",
+                    count,
+                    preset.slots()
+                )
+            }
+        }
+        PresetDestination::NewWorkspace => {
+            format!(
+                "Enter Preview · creates a new workspace with {} shells",
+                preset.slots()
+            )
+        }
+    };
+    frame.render_widget(
+        Paragraph::new(detail)
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(if enabled { Color::White } else { Color::Red })),
+        rows[2],
+    );
+    geometry.preset_apply = Some(from_ratatui(rows[2]));
+
+    frame.render_widget(
+        Paragraph::new("arrows/hjkl Move · Tab Destination · Enter Preview · Esc Close")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::Gray)),
+        rows[3],
+    );
+}
+
+fn preset_preview_rect(rect: ratatui::layout::Rect, preset: PresetKind) -> ratatui::layout::Rect {
+    let (width_divisor, height_divisor) = preset.preview_divisors();
+    let width = rect.width - rect.width % width_divisor;
+    let height = rect.height - rect.height % height_divisor;
+    if width == 0 || height == 0 {
+        return rect;
+    }
+    ratatui::layout::Rect::new(
+        rect.x + (rect.width - width) / 2,
+        rect.y + (rect.height - height) / 2,
+        width,
+        height,
+    )
 }
 
 fn render_pane(frame: &mut Frame, app: &App, pane: &PaneRect) {
@@ -336,11 +508,14 @@ fn footer(app: &App) -> String {
             "ADD PANE · Click pane → + · d Delete draft · Enter Done · Esc Cancel preview{modified}"
         );
     }
+    if app.pending_new_workspace {
+        return "NEW WORKSPACE · p Change preset · Enter Create · u Back · Esc Cancel".into();
+    }
     if app.carrying.is_some() {
         return format!("Arrows choose target · Space Drop · Esc Release · ? Help{modified}");
     }
     format!(
-        "Drag to arrange · n Add pane · = Balance · Enter Apply · Esc Cancel · ? Help{modified}"
+        "Drag to arrange · n Add pane · p Presets · = Balance · Enter Apply · Esc Cancel · ? Help{modified}"
     )
 }
 
@@ -355,6 +530,7 @@ fn render_help(frame: &mut Frame) {
         Line::from(""),
         Line::styled("Keyboard", Style::default().fg(Color::Cyan).bold()),
         Line::from("  n                  Add pane mode"),
+        Line::from("  p                  Layout presets"),
         Line::from("  Arrows / h j k l   Select spatially"),
         Line::from("  Space              Pick up / drop"),
         Line::from("  [ / ]              Resize selected split"),
@@ -461,9 +637,21 @@ fn to_ratatui(rect: Rect) -> ratatui::layout::Rect {
     ratatui::layout::Rect::new(rect.x, rect.y, rect.width, rect.height)
 }
 
+fn from_ratatui(rect: ratatui::layout::Rect) -> Rect {
+    Rect {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{herdr::Snapshot, model::LayoutNode};
+    use ratatui::{backend::TestBackend, Terminal};
+    use std::collections::HashMap;
 
     #[test]
     fn shell_status_does_not_show_unknown() {
@@ -514,5 +702,31 @@ mod tests {
                 height: 1,
             }
         );
+    }
+
+    #[test]
+    fn preset_gallery_renders_every_template_and_exposes_mouse_targets() {
+        let mut app = App::new(Snapshot {
+            workspace_id: "w".into(),
+            tab_id: "t".into(),
+            focused_pane_id: "p1".into(),
+            tree: LayoutNode::Pane {
+                pane_id: "p1".into(),
+            },
+            metadata: HashMap::new(),
+            revisions: HashMap::new(),
+        });
+        app.open_preset_picker();
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut geometry = None;
+
+        terminal
+            .draw(|frame| geometry = Some(draw(frame, &app)))
+            .unwrap();
+
+        let geometry = geometry.unwrap();
+        assert_eq!(geometry.preset_cards.len(), PresetKind::ALL.len());
+        assert!(geometry.preset_destination.is_some());
+        assert!(geometry.preset_apply.is_some());
     }
 }

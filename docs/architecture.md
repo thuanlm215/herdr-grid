@@ -52,6 +52,24 @@ Deleting a draft before Apply is therefore a model-only edit. If a later Apply
 step fails, recovery restores the expanded intermediate layout before closing
 only the panes created by that Apply attempt.
 
+Fixed presets are pure model constructors. For the current tab, existing pane
+IDs fill the preset slots and any missing slots receive draft IDs. A preset
+with fewer slots than the current preview is rejected rather than deleting a
+pane. For main-pane variants, the selected pane is assigned to the main slot.
+
+A new-workspace preset follows an isolated creation transaction:
+
+1. Create an unfocused workspace and use its returned root pane as the first
+   logical slot.
+2. Materialize the preset tree through ordered `pane.split` calls, retaining
+   every returned pane ID.
+3. Verify pane membership after every split and verify the final topology and
+   ratios.
+4. Focus the new workspace only after successful verification.
+
+If any step fails, the transaction closes only the workspace it just created.
+The source workspace is never mutated by this path.
+
 ## Validation and reconciliation
 
 Before the first write, the transaction compares the live workspace, tab,
@@ -78,6 +96,7 @@ The transaction engine never:
 - closes a scratch tab directly;
 - edits more than one source tab;
 - moves panes between workspaces.
+- deletes existing panes to make them fit a preset.
 
 ## Remaining limitations
 

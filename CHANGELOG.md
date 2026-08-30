@@ -6,9 +6,14 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-30
+
 ### Added
 
 - Balance every layout split to 50/50 from normal mode with `=`.
+- Choose from fixed grid and main-pane layout presets with `p`, automatically
+  filling missing slots with new shell panes.
+- Create a preset in a fresh workspace without changing the source workspace.
 
 ## [0.2.1] - 2026-08-30
 
@@ -47,7 +52,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Pre-apply stale-state validation and post-operation verification.
 - Transaction recovery for ambiguous or partially completed Herdr operations.
 
-[Unreleased]: https://github.com/thuanlm215/herdr-grid/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/thuanlm215/herdr-grid/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/thuanlm215/herdr-grid/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/thuanlm215/herdr-grid/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/thuanlm215/herdr-grid/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/thuanlm215/herdr-grid/compare/v0.1.0...v0.1.1

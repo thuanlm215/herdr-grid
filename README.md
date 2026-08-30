@@ -27,12 +27,20 @@ preview is applied.
 
 ![Add pane mode showing a green draft pane and edge controls](docs/images/add-pane-mode.png)
 
+### Apply a layout preset
+
+Press `p` to open a visual gallery of fixed layouts, including 2×2 and 3×3
+grids and asymmetric main-pane layouts. Apply the preset to the current tab or
+use it to create a fresh workspace.
+
 ## Features
 
 - Drag a pane onto another pane to swap their positions.
 - Drop on an edge to create a new horizontal or vertical relationship.
 - Drag split dividers to resize panes.
 - Preview one or more new shell panes and create them together on Apply.
+- Choose a fixed layout preset; missing slots become new shell panes.
+- Build a preset in the current tab or in a newly created workspace.
 - Balance every split in the preview to 50/50 with one key.
 - Rearrange and resize the layout with keyboard controls.
 - Undo or reset changes before they reach Herdr.
@@ -132,6 +140,7 @@ Herdr's default prefix is `Ctrl+b`, so press `Ctrl+b`, release it, then press
 | Drag divider | Resize a split |
 | Click pane | Select pane |
 | `n` | Enter Add pane mode |
+| `p` | Open the fixed layout preset gallery |
 | Click pane, then edge `+` | Add a draft shell at that edge |
 | `d` in Add pane mode | Remove the selected draft pane |
 | `Enter` in Add pane mode | Keep drafts in the preview and return to normal mode |
@@ -145,6 +154,25 @@ Herdr's default prefix is `Ctrl+b`, so press `Ctrl+b`, release it, then press
 | `Enter` | Validate and apply preview |
 | `Esc` or `q` in the normal mode | Cancel without applying |
 | `?` | Open the complete in-app help |
+
+### Layout presets
+
+The preset gallery contains equal 2×2, 3×2, 2×3, and 3×3 grids plus common
+main-pane arrangements: main-left/right/top/bottom with two companion panes,
+and a main pane beside a 2×2 grid.
+
+![Layout preset gallery with nine fixed pane arrangements](docs/images/layout-presets.png)
+
+Use arrow keys or `h/j/k/l` to choose a preset, `Tab` to switch between
+**Current tab** and **New workspace**, and `Enter` to preview it. The current
+tab option keeps all existing panes and creates draft shells for missing
+slots; presets with too few slots are disabled. In a main-pane preset, the
+currently selected pane becomes the main pane. The new-workspace option
+creates every slot as a new shell and leaves the source workspace untouched.
+
+After returning to the normal editor, you can rearrange the preview further.
+Press `Enter` to apply/create it, `u` to return from a new-workspace preview,
+or `Esc` to cancel without writing.
 
 For a read-only connectivity check from inside a Herdr-managed pane:
 
@@ -174,6 +202,11 @@ fails after creating a requested shell, it may close only that newly created
 pane while restoring the original layout. It never calls `layout.apply` or
 `tab.close`. See [Architecture](docs/architecture.md) for details and remaining
 failure modes.
+
+For a new-workspace preset, Apply creates an isolated workspace first and
+constructs its split tree from Herdr's returned pane IDs. If construction or
+verification fails, the plugin closes only that newly created workspace. The
+source workspace is never rearranged.
 
 ## Development
 

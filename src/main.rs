@@ -9,7 +9,7 @@ use crossterm::{
 };
 use herdr_grid::{
     app::App,
-    herdr::{CliClient, HerdrClient, Transaction},
+    herdr::{create_workspace_layout, CliClient, HerdrClient, Transaction},
     ui::{draw, key, mouse, Action},
 };
 use std::{io::stdout, time::Duration};
@@ -76,21 +76,33 @@ async fn run(snapshot: herdr_grid::herdr::Snapshot, client: &CliClient) -> anyho
                         }
                         let snapshot = app.snapshot.clone();
                         let target = app.preview.clone();
-                        let transaction = Transaction {
-                            client,
-                            snapshot: &snapshot,
-                        };
+                        let pending_new_workspace = app.pending_new_workspace;
                         let mut render_error = None;
-                        let result = transaction
-                            .apply_with_progress(&target, &mut |progress| {
-                                app.progress = Some(progress);
-                                if let Err(error) = term.draw(|frame| {
-                                    let _ = draw(frame, &app);
-                                }) {
-                                    render_error.get_or_insert_with(|| error.to_string());
-                                }
-                            })
-                            .await;
+                        let mut report_progress = |progress| {
+                            app.progress = Some(progress);
+                            if let Err(error) = term.draw(|frame| {
+                                let _ = draw(frame, &app);
+                            }) {
+                                render_error.get_or_insert_with(|| error.to_string());
+                            }
+                        };
+                        let result = if pending_new_workspace {
+                            let cwd = snapshot
+                                .metadata
+                                .get(&snapshot.focused_pane_id)
+                                .and_then(|metadata| metadata.cwd.as_deref())
+                                .unwrap_or(".");
+                            create_workspace_layout(client, &target, cwd, &mut report_progress)
+                                .await
+                                .map(|_| ())
+                        } else {
+                            Transaction {
+                                client,
+                                snapshot: &snapshot,
+                            }
+                            .apply_with_progress(&target, &mut report_progress)
+                            .await
+                        };
                         if let Some(error) = render_error {
                             break Err(anyhow::anyhow!("render apply progress: {error}"));
                         }

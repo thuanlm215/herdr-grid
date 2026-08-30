@@ -22,6 +22,39 @@ pub fn key(app: &mut App, k: KeyEvent) -> Action {
         }
         return Action::Continue;
     }
+    if app.preset_picker.is_some() {
+        return match k.code {
+            KeyCode::Esc | KeyCode::Char('p') => {
+                app.close_preset_picker();
+                Action::Continue
+            }
+            KeyCode::Tab => {
+                app.toggle_preset_destination();
+                Action::Continue
+            }
+            KeyCode::Enter => {
+                app.accept_selected_preset();
+                Action::Continue
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                app.move_preset_selection(-1);
+                Action::Continue
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                app.move_preset_selection(1);
+                Action::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.move_preset_selection(-3);
+                Action::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.move_preset_selection(3);
+                Action::Continue
+            }
+            _ => Action::Continue,
+        };
+    }
     if app.add_mode {
         return match k.code {
             KeyCode::Esc if app.message.take().is_some() => Action::Continue,
@@ -59,7 +92,13 @@ pub fn key(app: &mut App, k: KeyEvent) -> Action {
         KeyCode::Esc | KeyCode::Char('q') => Action::Cancel,
         KeyCode::Enter => Action::Apply,
         KeyCode::Char('n') => {
-            app.toggle_add_mode();
+            if !app.pending_new_workspace {
+                app.toggle_add_mode();
+            }
+            Action::Continue
+        }
+        KeyCode::Char('p') => {
+            app.open_preset_picker();
             Action::Continue
         }
         KeyCode::Char('u') => {
@@ -109,6 +148,19 @@ pub enum DragState {
 }
 
 pub fn mouse(app: &mut App, m: MouseEvent, g: &Geometry, drag: &mut Option<DragState>) {
+    if app.preset_picker.is_some() {
+        if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
+            if let Some(index) = g.hit_preset_card(m.column, m.row) {
+                app.select_preset(index);
+            } else if g.hit_preset_destination(m.column, m.row) {
+                app.toggle_preset_destination();
+            } else if g.hit_preset_apply(m.column, m.row) {
+                app.accept_selected_preset();
+            }
+        }
+        *drag = None;
+        return;
+    }
     if app.add_mode {
         if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
             if let Some(zone) = g.hit_add_zone(m.column, m.row) {
@@ -485,5 +537,61 @@ mod tests {
         );
         assert_eq!(adding.preview.ratio_at(&[]), Some(0.8));
         assert!(adding.undo.is_empty());
+    }
+
+    #[test]
+    fn preset_picker_builds_missing_slots_and_keeps_selected_pane_as_main() {
+        let mut app = app();
+        app.selected = "b".into();
+
+        key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('p'), crossterm::event::KeyModifiers::NONE),
+        );
+        let main_left = crate::model::PresetKind::ALL
+            .iter()
+            .position(|preset| *preset == crate::model::PresetKind::MainLeft)
+            .unwrap();
+        app.select_preset(main_left);
+        key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE),
+        );
+
+        assert!(app.preset_picker.is_none());
+        assert_eq!(app.preview.pane_ids()[0], "b");
+        assert_eq!(app.preview.pane_ids().len(), 3);
+        assert!(app
+            .preview
+            .pane_ids()
+            .iter()
+            .any(|id| crate::model::is_draft_pane(id)));
+        assert!(!app.pending_new_workspace);
+    }
+
+    #[test]
+    fn new_workspace_preset_can_be_previewed_and_undone_without_touching_source() {
+        let mut app = app();
+        let original = app.preview.clone();
+        app.open_preset_picker();
+        app.toggle_preset_destination();
+        let grid = crate::model::PresetKind::ALL
+            .iter()
+            .position(|preset| *preset == crate::model::PresetKind::Grid2x2)
+            .unwrap();
+        app.select_preset(grid);
+        app.accept_selected_preset();
+
+        assert!(app.pending_new_workspace);
+        assert_eq!(app.preview.pane_ids().len(), 4);
+        assert!(app
+            .preview
+            .pane_ids()
+            .iter()
+            .all(|id| crate::model::is_draft_pane(id)));
+
+        app.undo();
+        assert!(!app.pending_new_workspace);
+        assert_eq!(app.preview, original);
     }
 }
