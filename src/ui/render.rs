@@ -154,8 +154,10 @@ fn render_pane(frame: &mut Frame, app: &App, pane: &PaneRect) {
 
 fn add_zones(pane: &PaneRect) -> Vec<AddZone> {
     let r = pane.rect;
-    let side_width = 1;
-    let side_height = r.height.clamp(1, 7);
+    // Terminal cells are roughly twice as tall as they are wide. A 2x3 side
+    // control is therefore the visual rotation of a 7x1 horizontal control.
+    let side_width = r.width.clamp(1, 2);
+    let side_height = r.height.clamp(1, 3);
     let horizontal_width = r.width.clamp(1, 7);
     let horizontal_height = 1;
     let center_x =
@@ -212,13 +214,32 @@ fn add_zones(pane: &PaneRect) -> Vec<AddZone> {
 fn render_add_zones(frame: &mut Frame, zones: &[AddZone]) {
     for zone in zones {
         frame.render_widget(Clear, to_ratatui(zone.rect));
-        let button = Paragraph::new("+").alignment(Alignment::Center).style(
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::LightCyan)
-                .bold(),
+        frame.render_widget(
+            Block::default().style(Style::default().bg(Color::LightCyan)),
+            to_ratatui(zone.rect),
         );
-        frame.render_widget(button, to_ratatui(zone.rect));
+        let vertical = matches!(zone.edge, Edge::Left | Edge::Right);
+        let marker = Rect {
+            x: if vertical {
+                zone.rect.x
+            } else {
+                zone.rect.x.saturating_add(zone.rect.width / 2)
+            },
+            y: zone.rect.y.saturating_add(zone.rect.height / 2),
+            width: if vertical { zone.rect.width } else { 1 },
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(if vertical { "＋" } else { "+" })
+                .alignment(Alignment::Center)
+                .style(
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::LightCyan)
+                        .bold(),
+                ),
+            to_ratatui(marker),
+        );
     }
 }
 
@@ -481,7 +502,7 @@ mod tests {
         });
         let left = zones.iter().find(|zone| zone.edge == Edge::Left).unwrap();
         let top = zones.iter().find(|zone| zone.edge == Edge::Top).unwrap();
-        assert_eq!((left.rect.width, left.rect.height), (1, 7));
+        assert_eq!((left.rect.width, left.rect.height), (2, 3));
         assert_eq!((top.rect.width, top.rect.height), (7, 1));
     }
 }
