@@ -34,7 +34,8 @@ the processes running inside those panes.
 - A terminal with mouse-event support
 - Rust stable and Cargo when building from source
 
-Windows and prebuilt release artifacts are not available yet.
+Windows is not supported yet. Tagged releases provide prebuilt binaries for
+ARM64 and AMD64 macOS, plus statically linked AMD64 Linux.
 
 ## Install
 
@@ -141,7 +142,6 @@ failure reconciliation are implemented. Work remaining before the first
 stable release includes:
 
 - continuous stale-state indication while the popup remains open;
-- packaged Linux and macOS binaries with checksums;
 - broader terminal and live-session compatibility testing;
 - release screenshots and a short demonstration recording.
 

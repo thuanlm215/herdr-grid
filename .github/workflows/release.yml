@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ matrix.triple }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: macos-latest
+            triple: aarch64-apple-darwin
+          - os: macos-latest
+            triple: x86_64-apple-darwin
+          - os: ubuntu-latest
+            triple: x86_64-unknown-linux-musl
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify tag matches Cargo.toml and herdr-plugin.toml versions
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate="$(grep -E '^version *= *"' Cargo.toml | head -n1 | sed -E 's/^version *= *"([^"]+)".*/\1/')"
+          manifest="$(grep -E '^version *= *"' herdr-plugin.toml | head -n1 | sed -E 's/^version *= *"([^"]+)".*/\1/')"
+          if [ "$tag" != "$crate" ]; then
+            echo "tag $GITHUB_REF_NAME ($tag) != Cargo.toml version ($crate)" >&2
+            exit 1
+          fi
+          if [ "$tag" != "$manifest" ]; then
+            echo "tag $GITHUB_REF_NAME ($tag) != herdr-plugin.toml version ($manifest)" >&2
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: ${{ matrix.triple }}
+
+      - name: Install musl tools
+        if: matrix.triple == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.triple }}
+
+      - name: Stage asset and checksum
+        shell: bash
+        run: |
+          mkdir -p dist
+          triple="${{ matrix.triple }}"
+          asset="herdr-grid-$triple"
+          cp "target/$triple/release/herdr-grid" "dist/$asset"
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$asset" > "$asset.sha256"
+          else
+            shasum -a 256 "$asset" > "$asset.sha256"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.triple }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Assemble release assets
+        shell: bash
+        run: |
+          mkdir -p release
+          find artifacts -type f -name 'herdr-grid-*' ! -name '*.sha256' -exec cp {} release/ \;
+          cat artifacts/*/*.sha256 > release/SHA256SUMS
+          printf '%s\n' "$GITHUB_SHA" > release/COMMIT
+          ls -l release
+          cat release/SHA256SUMS
+
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+          gh release upload "$GITHUB_REF_NAME" release/* --clobber --repo "$GITHUB_REPOSITORY"
