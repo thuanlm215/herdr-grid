@@ -45,6 +45,13 @@ Shape-changing edits use a stable-anchor transaction:
 All scratch pane and tab IDs come from Herdr responses. The executor does not
 predict identifiers.
 
+New panes use reserved draft IDs only inside the preview model. On Apply, the
+executor creates each shell with `pane.split`, replaces draft IDs with the
+authoritative IDs returned by Herdr, and then runs the normal layout planner.
+Deleting a draft before Apply is therefore a model-only edit. If a later Apply
+step fails, recovery restores the expanded intermediate layout before closing
+only the panes created by that Apply attempt.
+
 ## Validation and reconciliation
 
 Before the first write, the transaction compares the live workspace, tab,
@@ -67,7 +74,7 @@ issuing writes and reports the last authoritative pane and tab IDs available.
 The transaction engine never:
 
 - calls `layout.apply`, because it replaces live PTYs;
-- closes a pane or sends input to its process;
+- closes a pane that existed before Apply or sends input to its process;
 - closes a scratch tab directly;
 - edits more than one source tab;
 - moves panes between workspaces.

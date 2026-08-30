@@ -39,6 +39,17 @@ pub trait HerdrClient: Send + Sync {
     ) -> anyhow::Result<MoveOutcome> {
         anyhow::bail!("structural pane movement is not implemented by this client")
     }
+    async fn split_pane(
+        &self,
+        _target: &str,
+        _direction: Direction,
+        _ratio: f64,
+    ) -> anyhow::Result<SplitOutcome> {
+        anyhow::bail!("pane creation is not implemented by this client")
+    }
+    async fn close_pane(&self, _pane: &str) -> anyhow::Result<()> {
+        anyhow::bail!("pane cleanup is not implemented by this client")
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -46,6 +57,12 @@ pub struct MoveOutcome {
     pub pane_id: String,
     pub tab_id: String,
     pub created_tab_id: Option<String>,
+    pub target_tree: LayoutNode,
+}
+
+#[derive(Clone, Debug)]
+pub struct SplitOutcome {
+    pub pane_id: String,
     pub target_tree: LayoutNode,
 }
 
@@ -289,5 +306,40 @@ impl HerdrClient for CliClient {
         };
         let result = Self::socket_request("pane.move", serde_json::json!({"pane_id":pane,"destination":{"type":"tab","tab_id":tab,"target_pane_id":target,"split":split,"ratio":ratio},"focus":false})).await?;
         Self::move_outcome(result)
+    }
+    async fn split_pane(
+        &self,
+        target: &str,
+        direction: Direction,
+        ratio: f64,
+    ) -> anyhow::Result<SplitOutcome> {
+        let direction = match direction {
+            Direction::Horizontal => "right",
+            Direction::Vertical => "down",
+        };
+        let result = Self::socket_request(
+            "pane.split",
+            serde_json::json!({
+                "target_pane_id": target,
+                "direction": direction,
+                "ratio": ratio,
+                "focus": false
+            }),
+        )
+        .await?;
+        let pane_id = result
+            .pointer("/pane/pane_id")
+            .or_else(|| result.pointer("/split_result/pane/pane_id"))
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow::anyhow!("pane.split response lacks pane id"))?
+            .to_owned();
+        let target_tree = self.layout_for(&pane_id).await?;
+        Ok(SplitOutcome {
+            pane_id,
+            target_tree,
+        })
+    }
+    async fn close_pane(&self, pane: &str) -> anyhow::Result<()> {
+        Self::run(&["pane", "close", pane]).await.map(|_| ())
     }
 }

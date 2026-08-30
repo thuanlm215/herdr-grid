@@ -1,5 +1,5 @@
 use super::{plan, rebuild_plan, HerdrClient, Operation, Snapshot};
-use crate::model::LayoutNode;
+use crate::model::{is_draft_pane, Direction, LayoutNode};
 use fs2::FileExt;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
@@ -53,6 +53,17 @@ impl<C: HerdrClient> Transaction<'_, C> {
         {
             anyhow::bail!("layout changed since editor opened; no changes applied")
         };
+        if target.pane_ids().iter().any(|id| is_draft_pane(id)) {
+            return self.apply_with_drafts(target, progress).await;
+        }
+        self.apply_validated(target, progress).await
+    }
+
+    async fn apply_validated(
+        &self,
+        target: &LayoutNode,
+        progress: &mut dyn FnMut(ApplyProgress),
+    ) -> anyhow::Result<()> {
         let p = plan(&self.snapshot.tree, target)?;
         if p.structural {
             return self.apply_structural(&p.operations, target, progress).await;
@@ -114,6 +125,123 @@ impl<C: HerdrClient> Transaction<'_, C> {
         }
         progress(ApplyProgress::Verifying);
         progress(ApplyProgress::Done);
+        Ok(())
+    }
+
+    async fn apply_with_drafts(
+        &self,
+        target: &LayoutNode,
+        progress: &mut dyn FnMut(ApplyProgress),
+    ) -> anyhow::Result<()> {
+        let drafts = target
+            .pane_ids()
+            .into_iter()
+            .filter(|id| is_draft_pane(id))
+            .collect::<Vec<_>>();
+        let anchor = self
+            .snapshot
+            .tree
+            .pane_ids()
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("cannot create a pane in an empty layout"))?;
+        let mut created = Vec::with_capacity(drafts.len());
+        let mut expanded_tree = self.snapshot.tree.clone();
+
+        for (index, draft) in drafts.iter().enumerate() {
+            progress(ApplyProgress::Applying {
+                current: index + 1,
+                total: drafts.len(),
+            });
+            match self
+                .client
+                .split_pane(&anchor, Direction::Horizontal, 0.5)
+                .await
+            {
+                Ok(outcome) => {
+                    created.push((draft.clone(), outcome.pane_id));
+                    expanded_tree = outcome.target_tree;
+                    let mut expected_ids = self.snapshot.tree.pane_ids();
+                    expected_ids.extend(created.iter().map(|(_, actual)| actual.clone()));
+                    expected_ids.sort();
+                    if sorted_ids(&expanded_tree) != expected_ids {
+                        progress(ApplyProgress::Recovering);
+                        let cleanup = self.cleanup_created(&created, &anchor).await;
+                        return match cleanup {
+                            Ok(()) => Err(anyhow::anyhow!(
+                                "pane creation changed an unexpected part of the layout; new panes were removed"
+                            )),
+                            Err(error) => Err(anyhow::anyhow!(
+                                "pane creation changed an unexpected part of the layout; cleanup also failed: {error}"
+                            )),
+                        };
+                    }
+                }
+                Err(cause) => {
+                    progress(ApplyProgress::Recovering);
+                    let cleanup = self.cleanup_created(&created, &anchor).await;
+                    return match cleanup {
+                        Ok(()) => Err(anyhow::anyhow!(
+                            "could not create new pane ({cause}); created panes were removed"
+                        )),
+                        Err(error) => Err(anyhow::anyhow!(
+                            "could not create new pane ({cause}); cleanup also failed: {error}"
+                        )),
+                    };
+                }
+            }
+        }
+
+        let mut mapped_target = target.clone();
+        for (draft, actual) in &created {
+            mapped_target.replace_pane_id(draft, actual.clone())?;
+        }
+        let expanded = Snapshot {
+            workspace_id: self.snapshot.workspace_id.clone(),
+            tab_id: self.snapshot.tab_id.clone(),
+            focused_pane_id: anchor.clone(),
+            tree: expanded_tree,
+            metadata: self.snapshot.metadata.clone(),
+            revisions: self.snapshot.revisions.clone(),
+        };
+        let transaction = Transaction {
+            client: self.client,
+            snapshot: &expanded,
+        };
+        match transaction.apply_validated(&mapped_target, progress).await {
+            Ok(()) => Ok(()),
+            Err(cause) => {
+                progress(ApplyProgress::Recovering);
+                match self.cleanup_created(&created, &anchor).await {
+                    Ok(()) => Err(anyhow::anyhow!(
+                        "apply failed ({cause}); new panes were removed and the original layout restored"
+                    )),
+                    Err(error) => Err(anyhow::anyhow!(
+                        "apply failed ({cause}); new-pane cleanup also failed: {error}"
+                    )),
+                }
+            }
+        }
+    }
+
+    async fn cleanup_created(
+        &self,
+        created: &[(String, String)],
+        anchor: &str,
+    ) -> anyhow::Result<()> {
+        let mut errors = Vec::new();
+        for (_, pane) in created.iter().rev() {
+            if let Err(error) = self.client.close_pane(pane).await {
+                errors.push(format!("{pane}: {error}"));
+            }
+        }
+        if !errors.is_empty() {
+            anyhow::bail!("failed to remove {}", errors.join(", "))
+        }
+        let live = self.client.layout_for(anchor).await?;
+        if !equivalent(&live, &self.snapshot.tree) {
+            anyhow::bail!("original layout verification mismatch after removing new panes")
+        }
         Ok(())
     }
 
@@ -390,7 +518,10 @@ fn equivalent(a: &LayoutNode, b: &LayoutNode) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{herdr::PaneMetadata, model::Direction};
+    use crate::{
+        herdr::PaneMetadata,
+        model::{Direction, DRAFT_PANE_PREFIX},
+    };
     use async_trait::async_trait;
     use std::{collections::HashMap, sync::Mutex};
     static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -801,5 +932,128 @@ mod tests {
             &fake.state.lock().unwrap().tabs["w1:t1"],
             &original
         ));
+    }
+
+    struct DraftFake {
+        state: Mutex<(LayoutNode, usize)>,
+        fail_split_at: Option<usize>,
+    }
+
+    #[async_trait]
+    impl HerdrClient for DraftFake {
+        async fn snapshot(&self) -> anyhow::Result<Snapshot> {
+            Ok(snapshot(self.state.lock().unwrap().0.clone()))
+        }
+        async fn layout_for(&self, _pane: &str) -> anyhow::Result<LayoutNode> {
+            Ok(self.state.lock().unwrap().0.clone())
+        }
+        async fn swap(&self, source: &str, target: &str) -> anyhow::Result<()> {
+            self.state.lock().unwrap().0.swap(source, target)?;
+            Ok(())
+        }
+        async fn set_ratio(
+            &self,
+            _tab: &str,
+            path: &crate::model::SplitPath,
+            ratio: f64,
+        ) -> anyhow::Result<()> {
+            self.state.lock().unwrap().0.set_ratio(path, ratio)?;
+            Ok(())
+        }
+        async fn split_pane(
+            &self,
+            target: &str,
+            direction: Direction,
+            ratio: f64,
+        ) -> anyhow::Result<super::super::SplitOutcome> {
+            let mut state = self.state.lock().unwrap();
+            state.1 += 1;
+            if self.fail_split_at == Some(state.1) {
+                anyhow::bail!("injected split failure")
+            }
+            let pane_id = format!("new-{}", state.1);
+            state
+                .0
+                .insert_second(target, pane_id.clone(), direction, ratio)?;
+            Ok(super::super::SplitOutcome {
+                pane_id,
+                target_tree: state.0.clone(),
+            })
+        }
+        async fn close_pane(&self, pane: &str) -> anyhow::Result<()> {
+            self.state.lock().unwrap().0.detach_pane(pane)?;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn draft_is_materialized_as_a_real_pane_only_on_apply() {
+        let _serial = TEST_LOCK.lock().await;
+        let original = LayoutNode::Pane {
+            pane_id: "a".into(),
+        };
+        let draft = format!("{DRAFT_PANE_PREFIX}1");
+        let target = LayoutNode::Split {
+            direction: Direction::Horizontal,
+            ratio: 0.5,
+            first: Box::new(original.clone()),
+            second: Box::new(LayoutNode::Pane { pane_id: draft }),
+        };
+        let fake = DraftFake {
+            state: Mutex::new((original.clone(), 0)),
+            fail_split_at: None,
+        };
+
+        Transaction {
+            client: &fake,
+            snapshot: &snapshot(original),
+        }
+        .apply(&target)
+        .await
+        .unwrap();
+
+        let state = fake.state.lock().unwrap();
+        assert_eq!(state.0.pane_ids(), ["a", "new-1"]);
+        assert_eq!(state.1, 1);
+    }
+
+    #[tokio::test]
+    async fn partial_draft_creation_closes_only_new_panes() {
+        let _serial = TEST_LOCK.lock().await;
+        let original = LayoutNode::Pane {
+            pane_id: "a".into(),
+        };
+        let mut target = original.clone();
+        target
+            .insert_second(
+                "a",
+                format!("{DRAFT_PANE_PREFIX}1"),
+                Direction::Horizontal,
+                0.5,
+            )
+            .unwrap();
+        target
+            .insert_second(
+                &format!("{DRAFT_PANE_PREFIX}1"),
+                format!("{DRAFT_PANE_PREFIX}2"),
+                Direction::Vertical,
+                0.5,
+            )
+            .unwrap();
+        let fake = DraftFake {
+            state: Mutex::new((original.clone(), 0)),
+            fail_split_at: Some(2),
+        };
+
+        let error = Transaction {
+            client: &fake,
+            snapshot: &snapshot(original.clone()),
+        }
+        .apply(&target)
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("created panes were removed"));
+        assert_eq!(fake.state.lock().unwrap().0, original);
     }
 }

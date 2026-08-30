@@ -19,6 +19,7 @@ the processes running inside those panes.
 - Drag a pane onto another pane to swap their positions.
 - Drop on an edge to create a new horizontal or vertical relationship.
 - Drag split dividers to resize panes.
+- Preview one or more new shell panes and create them together on Apply.
 - Use the same editor entirely from the keyboard.
 - Undo or reset changes before they reach Herdr.
 - Apply the preview explicitly with `Enter`; cancel safely with `Esc`.
@@ -116,13 +117,18 @@ Herdr's default prefix is `Ctrl+b`, so press `Ctrl+b`, release it, then press
 | Drag pane to edge | Re-parent pane at that edge |
 | Drag divider | Resize a split |
 | Click pane | Select pane |
+| `n` | Enter or leave Add pane mode |
+| Click pane, then edge `+` | Add a draft shell at that edge |
+| `d` in Add pane mode | Remove the selected draft pane |
+| `Enter` in Add pane mode | Keep drafts in the preview and return to normal mode |
+| `Esc` in Add pane mode | Discard the complete preview and return to normal mode |
 | Arrow keys or `h/j/k/l` | Move selection |
 | `Space` | Pick up or drop selected pane |
 | `[` / `]` | Resize selected split |
 | `u` | Undo last preview edit |
 | `r` | Restore the initial preview |
 | `Enter` | Validate and apply preview |
-| `Esc` or `q` | Cancel without applying |
+| `Esc` or `q` in the normal mode | Cancel without applying |
 | `?` | Open the complete in-app help |
 
 For a read-only connectivity check from inside a Herdr-managed pane:
@@ -139,7 +145,7 @@ target/release/herdr-grid --inspect
 2. Verifies the workspace, tab, pane membership, topology, and split ratios
    against the opening snapshot. Pane output and agent-status revisions do not
    invalidate the preview.
-3. Builds the complete operation plan before executing it.
+3. Creates requested shell panes, then builds the complete operation plan.
 4. Checks the authoritative Herdr layout after each operation.
 5. Re-discovers pane locations and rebuilds the original layout if an API
    response is lost or an operation fails.
@@ -148,8 +154,11 @@ Structural edits temporarily park non-anchor panes in labelled scratch tabs,
 then rebuild the requested tree with `pane.move`. Empty scratch tabs are
 removed automatically by Herdr.
 
-The plugin never calls `layout.apply`, `pane.close`, or `tab.close`. See
-[Architecture](docs/architecture.md) for details and remaining failure modes.
+The plugin never closes a pane that existed when the editor opened. If Apply
+fails after creating a requested shell, it may close only that newly created
+pane while restoring the original layout. It never calls `layout.apply` or
+`tab.close`. See [Architecture](docs/architecture.md) for details and remaining
+failure modes.
 
 ## Development
 

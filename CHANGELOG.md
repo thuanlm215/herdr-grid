@@ -6,6 +6,13 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-30
+
+### Added
+
+- Add pane mode (`n`) with clickable edge targets, removable draft shells,
+  and deferred shell creation on Apply.
+
 ## [0.1.1] - 2026-08-30
 
 ### Added
@@ -29,6 +36,7 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Pre-apply stale-state validation and post-operation verification.
 - Transaction recovery for ambiguous or partially completed Herdr operations.
 
-[Unreleased]: https://github.com/thuanlm215/herdr-grid/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/thuanlm215/herdr-grid/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/thuanlm215/herdr-grid/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/thuanlm215/herdr-grid/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/thuanlm215/herdr-grid/releases/tag/v0.1.0

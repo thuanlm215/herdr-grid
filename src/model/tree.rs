@@ -3,6 +3,11 @@ use std::collections::HashSet;
 
 pub type PaneId = String;
 pub type SplitPath = Vec<bool>; // false=first, true=second
+pub const DRAFT_PANE_PREFIX: &str = "__herdr_grid_draft:";
+
+pub fn is_draft_pane(id: &str) -> bool {
+    id.starts_with(DRAFT_PANE_PREFIX)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -100,6 +105,14 @@ impl LayoutNode {
                 first.replace_id(from, to.clone()) || second.replace_id(from, to)
             }
         }
+    }
+    pub fn replace_pane_id(&mut self, from: &str, to: PaneId) -> Result<(), ModelError> {
+        if from != to && self.pane_ids().iter().any(|id| id == &to) {
+            return Err(ModelError::Duplicate(to));
+        }
+        self.replace_id(from, to.clone())
+            .then_some(())
+            .ok_or_else(|| ModelError::NotFound(from.into()))
     }
     pub fn swap(&mut self, a: &str, b: &str) -> Result<(), ModelError> {
         if a == b {
@@ -250,6 +263,39 @@ impl LayoutNode {
         };
         Ok(())
     }
+
+    pub fn insert_at_edge(
+        &mut self,
+        target: &str,
+        pane: PaneId,
+        edge: Edge,
+        ratio: f64,
+    ) -> Result<(), ModelError> {
+        if self.pane_ids().iter().any(|id| id == &pane) {
+            return Err(ModelError::Duplicate(pane));
+        }
+        if !(0.05..=0.95).contains(&ratio) {
+            return Err(ModelError::InvalidRatio);
+        }
+        let target_node = self
+            .target_mut(target)
+            .ok_or_else(|| ModelError::NotFound(target.into()))?;
+        let old = target_node.clone();
+        let new = Self::Pane { pane_id: pane };
+        let (direction, first, second) = match edge {
+            Edge::Left => (Direction::Horizontal, new, old),
+            Edge::Right => (Direction::Horizontal, old, new),
+            Edge::Top => (Direction::Vertical, new, old),
+            Edge::Bottom => (Direction::Vertical, old, new),
+        };
+        *target_node = Self::Split {
+            direction,
+            ratio,
+            first: Box::new(first),
+            second: Box::new(second),
+        };
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -293,5 +339,22 @@ mod tests {
         let mut t = tree();
         assert!(t.set_ratio(&[], 0.8).is_ok());
         assert!(t.set_ratio(&[], 1.0).is_err())
+    }
+
+    #[test]
+    fn inserts_new_pane_on_requested_edge() {
+        let mut t = LayoutNode::Pane {
+            pane_id: "a".into(),
+        };
+        t.insert_at_edge("a", "draft".into(), Edge::Left, 0.5)
+            .unwrap();
+        assert_eq!(t.pane_ids(), ["draft", "a"]);
+        assert!(matches!(
+            t,
+            LayoutNode::Split {
+                direction: Direction::Horizontal,
+                ..
+            }
+        ));
     }
 }

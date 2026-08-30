@@ -22,6 +22,28 @@ pub fn key(app: &mut App, k: KeyEvent) -> Action {
         }
         return Action::Continue;
     }
+    if app.add_mode {
+        return match k.code {
+            KeyCode::Esc if app.message.take().is_some() => Action::Continue,
+            KeyCode::Esc => {
+                app.cancel_add_mode();
+                Action::Continue
+            }
+            KeyCode::Enter => {
+                app.exit_add_mode();
+                Action::Continue
+            }
+            KeyCode::Char('d') => {
+                app.remove_selected_draft();
+                Action::Continue
+            }
+            KeyCode::Char('?') => {
+                app.show_help = true;
+                Action::Continue
+            }
+            _ => Action::Continue,
+        };
+    }
     match k.code {
         KeyCode::Char('?') => {
             app.show_help = true;
@@ -36,6 +58,10 @@ pub fn key(app: &mut App, k: KeyEvent) -> Action {
         }
         KeyCode::Esc | KeyCode::Char('q') => Action::Cancel,
         KeyCode::Enter => Action::Apply,
+        KeyCode::Char('n') => {
+            app.toggle_add_mode();
+            Action::Continue
+        }
         KeyCode::Char('u') => {
             app.undo();
             Action::Continue
@@ -79,6 +105,18 @@ pub enum DragState {
 }
 
 pub fn mouse(app: &mut App, m: MouseEvent, g: &Geometry, drag: &mut Option<DragState>) {
+    if app.add_mode {
+        if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
+            if let Some(zone) = g.hit_add_zone(m.column, m.row) {
+                let target = zone.pane_id.clone();
+                app.add_draft(&target, zone.edge);
+            } else if let Some(Hit::Pane(id) | Hit::Edge(id, _)) = g.hit(m.column, m.row) {
+                app.select_add_target(id);
+            }
+        }
+        *drag = None;
+        return;
+    }
     match m.kind {
         MouseEventKind::Down(MouseButton::Left) => match g.hit(m.column, m.row) {
             Some(Hit::Pane(id) | Hit::Edge(id, _)) => {
@@ -154,7 +192,7 @@ mod tests {
     use super::*;
     use crate::{
         herdr::Snapshot,
-        model::{Direction, LayoutNode},
+        model::{AddZone, Direction, LayoutNode, Rect},
     };
     use std::collections::HashMap;
 
@@ -334,5 +372,92 @@ mod tests {
             &mut drag,
         );
         assert_eq!(app.dragging.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn add_mode_creates_and_deletes_a_draft_without_leaving_the_mode() {
+        let mut app = app();
+        key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), crossterm::event::KeyModifiers::NONE),
+        );
+        assert!(app.add_mode);
+
+        let mut geometry = Geometry::calculate(
+            &app.preview,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 40,
+                height: 20,
+            },
+        );
+        geometry.add_zones.push(AddZone {
+            pane_id: "a".into(),
+            edge: Edge::Right,
+            rect: Rect {
+                x: 8,
+                y: 8,
+                width: 4,
+                height: 3,
+            },
+        });
+        let mut drag = None;
+        mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 9,
+                row: 9,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+            &geometry,
+            &mut drag,
+        );
+
+        assert!(app.add_mode);
+        assert_eq!(app.preview.pane_ids().len(), 3);
+        assert!(crate::model::is_draft_pane(&app.selected));
+        key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('d'), crossterm::event::KeyModifiers::NONE),
+        );
+        assert_eq!(app.preview.pane_ids(), ["a", "b"]);
+        assert!(app.add_mode);
+    }
+
+    #[test]
+    fn add_mode_enter_keeps_preview_and_escape_discards_it() {
+        let mut app = app();
+        app.toggle_add_mode();
+        app.add_draft("a", Edge::Right);
+
+        for code in [KeyCode::Char('n'), KeyCode::Char('q')] {
+            assert!(matches!(
+                key(
+                    &mut app,
+                    KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+                ),
+                Action::Continue
+            ));
+            assert!(app.add_mode);
+        }
+        key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE),
+        );
+        assert!(!app.add_mode);
+        assert_eq!(app.preview.pane_ids().len(), 3);
+
+        app.toggle_add_mode();
+        let target = app.preview.pane_ids()[0].clone();
+        app.add_draft(&target, Edge::Bottom);
+        key(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE),
+        );
+        assert!(!app.add_mode);
+        assert_eq!(app.preview.pane_ids(), ["a", "b"]);
+        assert!(app.undo.is_empty());
     }
 }

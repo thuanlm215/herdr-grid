@@ -1,6 +1,8 @@
 use crate::{
     herdr::{ApplyProgress, HerdrClient, Snapshot, Transaction},
-    model::{Edge, Geometry, LayoutNode, PaneId, Rect, SplitPath},
+    model::{
+        is_draft_pane, Edge, Geometry, LayoutNode, PaneId, Rect, SplitPath, DRAFT_PANE_PREFIX,
+    },
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -22,6 +24,9 @@ pub struct App {
     pub dragging: Option<PaneId>,
     pub drop_preview: Option<DropPreview>,
     pub progress: Option<ApplyProgress>,
+    pub add_mode: bool,
+    pub add_target: Option<PaneId>,
+    next_draft: u64,
 }
 impl App {
     pub fn new(snapshot: Snapshot) -> Self {
@@ -40,6 +45,9 @@ impl App {
             dragging: None,
             drop_preview: None,
             progress: None,
+            add_mode: false,
+            add_target: None,
+            next_draft: 1,
         }
     }
     fn edit(&mut self, f: impl FnOnce(&mut LayoutNode) -> Result<(), crate::model::ModelError>) {
@@ -57,7 +65,8 @@ impl App {
     }
     pub fn undo(&mut self) {
         if let Some(t) = self.undo.pop() {
-            self.preview = t
+            self.preview = t;
+            self.repair_selection();
         }
     }
     pub fn reset(&mut self) {
@@ -65,6 +74,7 @@ impl App {
             self.undo.push(self.preview.clone());
             self.preview = self.snapshot.tree.clone()
         }
+        self.repair_selection();
     }
     pub fn resize_selected_split(&mut self, delta: f64) {
         let path = self.selected_split.clone();
@@ -154,6 +164,77 @@ impl App {
             }
         } else {
             self.carrying = Some(self.selected.clone())
+        }
+    }
+    pub fn toggle_add_mode(&mut self) {
+        self.add_mode = !self.add_mode;
+        self.add_target = None;
+        self.carrying = None;
+        self.dragging = None;
+        self.drop_preview = None;
+    }
+    pub fn exit_add_mode(&mut self) {
+        self.add_mode = false;
+        self.add_target = None;
+    }
+    pub fn cancel_add_mode(&mut self) {
+        self.preview = self.snapshot.tree.clone();
+        self.undo.clear();
+        self.carrying = None;
+        self.dragging = None;
+        self.drop_preview = None;
+        self.exit_add_mode();
+        self.repair_selection();
+    }
+    pub fn select_add_target(&mut self, pane_id: PaneId) {
+        self.selected = pane_id.clone();
+        self.add_target = Some(pane_id);
+    }
+    pub fn add_draft(&mut self, target: &str, edge: Edge) {
+        let id = format!("{DRAFT_PANE_PREFIX}{}", self.next_draft);
+        self.next_draft += 1;
+        let old = self.preview.clone();
+        match self.preview.insert_at_edge(target, id.clone(), edge, 0.5) {
+            Ok(_) => {
+                self.undo.push(old);
+                self.selected = id.clone();
+                self.add_target = Some(id);
+            }
+            Err(error) => self.message = Some(error.to_string()),
+        }
+    }
+    pub fn remove_selected_draft(&mut self) {
+        if !is_draft_pane(&self.selected) {
+            self.message = Some("Only new draft panes can be deleted here".into());
+            return;
+        }
+        let selected = self.selected.clone();
+        let old = self.preview.clone();
+        match self.preview.detach_pane(&selected) {
+            Ok(_) => {
+                self.undo.push(old);
+                self.repair_selection();
+                self.add_target = None;
+            }
+            Err(error) => self.message = Some(error.to_string()),
+        }
+    }
+    fn repair_selection(&mut self) {
+        let ids = self.preview.pane_ids();
+        if !ids.iter().any(|id| id == &self.selected) {
+            self.selected = ids
+                .iter()
+                .find(|id| !is_draft_pane(id))
+                .or_else(|| ids.first())
+                .cloned()
+                .unwrap_or_default();
+        }
+        if self
+            .add_target
+            .as_ref()
+            .is_some_and(|id| !ids.iter().any(|pane| pane == id))
+        {
+            self.add_target = None;
         }
     }
     pub async fn apply<C: HerdrClient>(&mut self, c: &C) -> anyhow::Result<()> {

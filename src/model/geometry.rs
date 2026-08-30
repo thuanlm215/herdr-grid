@@ -19,10 +19,17 @@ pub struct Divider {
     pub bounds: Rect,
     pub direction: Direction,
 }
+#[derive(Clone, Debug, PartialEq)]
+pub struct AddZone {
+    pub pane_id: PaneId,
+    pub edge: Edge,
+    pub rect: Rect,
+}
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Geometry {
     pub panes: Vec<PaneRect>,
     pub dividers: Vec<Divider>,
+    pub add_zones: Vec<AddZone>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Hit {
@@ -166,6 +173,9 @@ impl Geometry {
             || Hit::Pane(p.pane_id.clone()),
             |e| Hit::Edge(p.pane_id.clone(), e),
         ))
+    }
+    pub fn hit_add_zone(&self, x: u16, y: u16) -> Option<&AddZone> {
+        self.add_zones.iter().find(|zone| inside(zone.rect, x, y))
     }
 }
 fn inside(r: Rect, x: u16, y: u16) -> bool {

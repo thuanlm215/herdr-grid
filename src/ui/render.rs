@@ -1,7 +1,7 @@
 use crate::{
     app::{App, DropPreview},
     herdr::ApplyProgress,
-    model::{Edge, Geometry, PaneRect, Rect},
+    model::{is_draft_pane, AddZone, Edge, Geometry, PaneRect, Rect},
 };
 use ratatui::{
     layout::{Alignment, Constraint, Layout},
@@ -20,7 +20,7 @@ pub fn draw(frame: &mut Frame, app: &App) -> Geometry {
     .split(outer);
 
     let canvas = rows[0];
-    let geo = Geometry::calculate(
+    let mut geo = Geometry::calculate(
         &app.preview,
         Rect {
             x: canvas.x,
@@ -31,6 +31,14 @@ pub fn draw(frame: &mut Frame, app: &App) -> Geometry {
     );
     for pane in &geo.panes {
         render_pane(frame, app, pane);
+    }
+    if app.add_mode {
+        if let Some(target) = &app.add_target {
+            if let Some(pane) = geo.panes.iter().find(|pane| &pane.pane_id == target) {
+                geo.add_zones = add_zones(pane);
+                render_add_zones(frame, &geo.add_zones);
+            }
+        }
     }
     render_drop_preview(frame, app, &geo);
 
@@ -49,8 +57,17 @@ pub fn draw(frame: &mut Frame, app: &App) -> Geometry {
         );
     }
 
+    let footer_style = if app.add_mode {
+        Style::default().fg(Color::LightCyan).bold()
+    } else {
+        Style::default()
+    };
     frame.render_widget(
-        Paragraph::new(footer(app)).block(Block::default().borders(Borders::TOP)),
+        Paragraph::new(footer(app)).style(footer_style).block(
+            Block::default()
+                .borders(Borders::TOP)
+                .border_style(footer_style),
+        ),
         rows[2],
     );
 
@@ -61,10 +78,15 @@ pub fn draw(frame: &mut Frame, app: &App) -> Geometry {
 }
 
 fn render_pane(frame: &mut Frame, app: &App, pane: &PaneRect) {
+    let draft = is_draft_pane(&pane.pane_id);
     let metadata = app.snapshot.metadata.get(&pane.pane_id);
-    let raw_title = metadata
-        .and_then(|value| value.terminal_title_stripped.as_deref())
-        .unwrap_or(&pane.pane_id);
+    let raw_title = if draft {
+        "New shell"
+    } else {
+        metadata
+            .and_then(|value| value.terminal_title_stripped.as_deref())
+            .unwrap_or(&pane.pane_id)
+    };
     let cwd = metadata
         .and_then(|value| value.cwd.as_deref())
         .map(compact_cwd)
@@ -73,12 +95,28 @@ fn render_pane(frame: &mut Frame, app: &App, pane: &PaneRect) {
     let process = metadata.and_then(|value| value.process_name.as_deref());
     let agent = metadata.and_then(|value| value.agent.as_deref());
     let status = metadata.and_then(|value| value.agent_status.as_deref());
-    let secondary = secondary_label(agent, process, status);
+    let secondary = if draft {
+        "Created on Apply".into()
+    } else {
+        secondary_label(agent, process, status)
+    };
 
     let selected = pane.pane_id == app.selected;
     let moving = app.carrying.as_ref() == Some(&pane.pane_id)
         || app.dragging.as_ref() == Some(&pane.pane_id);
-    let border_color = if moving {
+    let border_color = if draft {
+        if app.add_mode && app.add_target.as_ref() == Some(&pane.pane_id) {
+            Color::LightGreen
+        } else {
+            Color::Green
+        }
+    } else if app.add_mode {
+        if app.add_target.as_ref() == Some(&pane.pane_id) {
+            Color::LightCyan
+        } else {
+            Color::Cyan
+        }
+    } else if moving {
         Color::Yellow
     } else if selected {
         Color::Cyan
@@ -104,10 +142,84 @@ fn render_pane(frame: &mut Frame, app: &App, pane: &PaneRect) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color))
-                .title(format!(" {} ", short_pane_id(&pane.pane_id))),
+                .title(if draft {
+                    " new ".into()
+                } else {
+                    format!(" {} ", short_pane_id(&pane.pane_id))
+                }),
         ),
         ratatui::layout::Rect::new(pane.rect.x, pane.rect.y, pane.rect.width, pane.rect.height),
     );
+}
+
+fn add_zones(pane: &PaneRect) -> Vec<AddZone> {
+    let r = pane.rect;
+    let side_width = 1;
+    let side_height = r.height.clamp(1, 7);
+    let horizontal_width = r.width.clamp(1, 7);
+    let horizontal_height = 1;
+    let center_x =
+        r.x.saturating_add(r.width.saturating_sub(horizontal_width) / 2);
+    let center_y = r.y.saturating_add(r.height.saturating_sub(side_height) / 2);
+    [
+        (
+            Edge::Left,
+            Rect {
+                x: r.x,
+                y: center_y,
+                width: side_width,
+                height: side_height,
+            },
+        ),
+        (
+            Edge::Right,
+            Rect {
+                x: r.x.saturating_add(r.width.saturating_sub(side_width)),
+                y: center_y,
+                width: side_width,
+                height: side_height,
+            },
+        ),
+        (
+            Edge::Top,
+            Rect {
+                x: center_x,
+                y: r.y,
+                width: horizontal_width,
+                height: horizontal_height,
+            },
+        ),
+        (
+            Edge::Bottom,
+            Rect {
+                x: center_x,
+                y: r.y
+                    .saturating_add(r.height.saturating_sub(horizontal_height)),
+                width: horizontal_width,
+                height: horizontal_height,
+            },
+        ),
+    ]
+    .into_iter()
+    .map(|(edge, rect)| AddZone {
+        pane_id: pane.pane_id.clone(),
+        edge,
+        rect,
+    })
+    .collect()
+}
+
+fn render_add_zones(frame: &mut Frame, zones: &[AddZone]) {
+    for zone in zones {
+        frame.render_widget(Clear, to_ratatui(zone.rect));
+        let button = Paragraph::new("+").alignment(Alignment::Center).style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightCyan)
+                .bold(),
+        );
+        frame.render_widget(button, to_ratatui(zone.rect));
+    }
 }
 
 fn render_drop_preview(frame: &mut Frame, app: &App, geometry: &Geometry) {
@@ -200,10 +312,15 @@ fn footer(app: &App) -> String {
     if app.dragging.is_some() {
         return format!("Drop on center to swap · Drop on edge to split{modified}");
     }
+    if app.add_mode {
+        return format!(
+            "ADD PANE · Click pane → + · d Delete draft · Enter Done · Esc Cancel preview{modified}"
+        );
+    }
     if app.carrying.is_some() {
         return format!("Arrows choose target · Space Drop · Esc Release · ? Help{modified}");
     }
-    format!("Drag to arrange · Enter Apply · Esc Cancel · ? Help{modified}")
+    format!("Drag to arrange · n Add pane · Enter Apply · Esc Cancel · ? Help{modified}")
 }
 
 fn render_help(frame: &mut Frame) {
@@ -216,12 +333,22 @@ fn render_help(frame: &mut Frame) {
         Line::from("  Drag divider       Resize split"),
         Line::from(""),
         Line::styled("Keyboard", Style::default().fg(Color::Cyan).bold()),
+        Line::from("  n                  Add pane mode"),
         Line::from("  Arrows / h j k l   Select spatially"),
         Line::from("  Space              Pick up / drop"),
         Line::from("  [ / ]              Resize selected split"),
         Line::from("  u / r              Undo / reset preview"),
         Line::from("  Enter              Apply preview"),
         Line::from("  Esc                Cancel or dismiss"),
+        Line::from(""),
+        Line::styled(
+            "Add pane mode",
+            Style::default().fg(Color::LightGreen).bold(),
+        ),
+        Line::from("  Click pane, then + Add a draft shell"),
+        Line::from("  d                  Remove selected draft"),
+        Line::from("  Enter              Keep drafts and exit mode"),
+        Line::from("  Esc                Discard preview and exit mode"),
     ];
     frame.render_widget(
         Paragraph::new(text).block(
@@ -339,5 +466,22 @@ mod tests {
             visible_title("Shopify store limits - grok", "~"),
             Some("Shopify store limits - grok")
         );
+    }
+
+    #[test]
+    fn add_buttons_follow_their_edge_orientation() {
+        let zones = add_zones(&PaneRect {
+            pane_id: "p1".into(),
+            rect: Rect {
+                x: 0,
+                y: 0,
+                width: 20,
+                height: 20,
+            },
+        });
+        let left = zones.iter().find(|zone| zone.edge == Edge::Left).unwrap();
+        let top = zones.iter().find(|zone| zone.edge == Edge::Top).unwrap();
+        assert_eq!((left.rect.width, left.rect.height), (1, 7));
+        assert_eq!((top.rect.width, top.rect.height), (7, 1));
     }
 }
