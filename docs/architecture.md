@@ -48,8 +48,10 @@ predict identifiers.
 ## Validation and reconciliation
 
 Before the first write, the transaction compares the live workspace, tab,
-pane membership, revisions, topology, and ratios with the snapshot captured
-when the editor opened.
+pane membership, topology, and ratios with the snapshot captured when the
+editor opened. Generic pane revisions are intentionally excluded because
+normal terminal output and agent-status updates advance them without changing
+the layout.
 
 Every write is followed by a layout check. Socket connect, write, and response
 waits have bounded deadlines. A timeout or malformed response is treated as an

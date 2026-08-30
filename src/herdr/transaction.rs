@@ -48,11 +48,10 @@ impl<C: HerdrClient> Transaction<'_, C> {
         let live = self.client.snapshot().await?;
         if live.workspace_id != self.snapshot.workspace_id
             || live.tab_id != self.snapshot.tab_id
-            || live.revisions != self.snapshot.revisions
             || !equivalent(&live.tree, &self.snapshot.tree)
             || sorted_ids(&live.tree) != sorted_ids(&self.snapshot.tree)
         {
-            anyhow::bail!("session changed since editor opened; no changes applied")
+            anyhow::bail!("layout changed since editor opened; no changes applied")
         };
         let p = plan(&self.snapshot.tree, target)?;
         if p.structural {
@@ -415,7 +414,7 @@ mod tests {
             }),
         }
     }
-    fn snapshot(tree: LayoutNode) -> Snapshot {
+    fn snapshot_at_revision(tree: LayoutNode, revision: u64) -> Snapshot {
         let metadata = tree
             .pane_ids()
             .into_iter()
@@ -424,7 +423,7 @@ mod tests {
                     id.clone(),
                     PaneMetadata {
                         pane_id: id,
-                        revision: 1,
+                        revision,
                         ..Default::default()
                     },
                 )
@@ -443,6 +442,10 @@ mod tests {
             revisions,
         }
     }
+
+    fn snapshot(tree: LayoutNode) -> Snapshot {
+        snapshot_at_revision(tree, 1)
+    }
     struct StructuralFake {
         state: Mutex<StructuralState>,
         fail_at: Option<usize>,
@@ -453,6 +456,7 @@ mod tests {
         tabs: HashMap<String, LayoutNode>,
         calls: usize,
         next_tab: usize,
+        revision: u64,
     }
     impl StructuralFake {
         fn outcome(
@@ -486,7 +490,10 @@ mod tests {
     impl HerdrClient for StructuralFake {
         async fn snapshot(&self) -> anyhow::Result<Snapshot> {
             let s = self.state.lock().unwrap();
-            Ok(snapshot(s.tabs[&s.original_tab].clone()))
+            Ok(snapshot_at_revision(
+                s.tabs[&s.original_tab].clone(),
+                s.revision,
+            ))
         }
         async fn layout_for(&self, pane: &str) -> anyhow::Result<LayoutNode> {
             let s = self.state.lock().unwrap();
@@ -589,6 +596,7 @@ mod tests {
                 tabs,
                 calls: 0,
                 next_tab: 1,
+                revision: 1,
             }),
             fail_at,
             committed_error_at: None,
@@ -635,6 +643,60 @@ mod tests {
             &fake.state.lock().unwrap().tabs["w1:t1"],
             &target
         ));
+    }
+
+    #[tokio::test]
+    async fn pane_activity_revision_drift_does_not_block_apply() {
+        let _serial = TEST_LOCK.lock().await;
+        let original = tree(["a", "b", "c"]);
+        let mut target = original.clone();
+        target.swap("a", "b").unwrap();
+        let fake = structural_fake(original.clone(), None);
+        fake.state.lock().unwrap().revision = 2;
+
+        Transaction {
+            client: &fake,
+            snapshot: &snapshot(original),
+        }
+        .apply(&target)
+        .await
+        .unwrap();
+
+        assert!(equivalent(
+            &fake.state.lock().unwrap().tabs["w1:t1"],
+            &target
+        ));
+    }
+
+    #[tokio::test]
+    async fn external_layout_drift_still_blocks_apply_before_writes() {
+        let _serial = TEST_LOCK.lock().await;
+        let original = tree(["a", "b", "c"]);
+        let mut requested = original.clone();
+        requested.swap("a", "b").unwrap();
+        let fake = structural_fake(original.clone(), None);
+        fake.state
+            .lock()
+            .unwrap()
+            .tabs
+            .get_mut("w1:t1")
+            .unwrap()
+            .set_ratio(&[], 0.7)
+            .unwrap();
+
+        let error = Transaction {
+            client: &fake,
+            snapshot: &snapshot(original),
+        }
+        .apply(&requested)
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "layout changed since editor opened; no changes applied"
+        );
+        assert_eq!(fake.state.lock().unwrap().calls, 0);
     }
 
     #[tokio::test]

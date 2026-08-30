@@ -104,8 +104,9 @@ target/release/herdr-grid --inspect
 `herdr-grid` edits a local layout model while the popup is open. Apply then:
 
 1. Acquires a process-wide apply lock.
-2. Verifies the workspace, tab, pane membership, revisions, topology, and
-   split ratios against the opening snapshot.
+2. Verifies the workspace, tab, pane membership, topology, and split ratios
+   against the opening snapshot. Pane output and agent-status revisions do not
+   invalidate the preview.
 3. Builds the complete operation plan before executing it.
 4. Checks the authoritative Herdr layout after each operation.
 5. Re-discovers pane locations and rebuilds the original layout if an API

@@ -13,6 +13,12 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Native ARM64 Linux release artifact using the statically linked
   `aarch64-unknown-linux-musl` target.
 
+### Fixed
+
+- Allow layout changes to be applied while panes produce output or agents
+  transition between working and idle, while still rejecting real layout
+  drift.
+
 ## [0.1.0] - 2026-08-30
 
 ### Added
