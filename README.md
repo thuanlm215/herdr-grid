@@ -97,15 +97,6 @@ herdr config check && herdr server reload-config
 
 ## Usage
 
-Open the editor through its plugin action:
-
-```sh
-herdr plugin action invoke open --plugin herdr-grid
-```
-
-The editor reads the tab underneath the popup and performs no writes until
-you apply the preview.
-
 ### Controls
 
 | Input | Action |
