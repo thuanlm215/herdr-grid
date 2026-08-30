@@ -154,10 +154,11 @@ fn render_pane(frame: &mut Frame, app: &App, pane: &PaneRect) {
 
 fn add_zones(pane: &PaneRect) -> Vec<AddZone> {
     let r = pane.rect;
-    // Terminal cells are roughly twice as tall as they are wide. A 2x4 side
-    // control gives the vertical button comparable visual weight.
-    let side_width = r.width.clamp(1, 2);
-    let side_height = r.height.clamp(1, 4);
+    // Odd dimensions give the one-cell ASCII '+' an exact center. Since
+    // terminal cells are taller than wide, 3x3 is also close to a visual
+    // rotation of the 7x1 horizontal control.
+    let side_width = r.width.clamp(1, 3);
+    let side_height = r.height.clamp(1, 3);
     let horizontal_width = r.width.clamp(1, 7);
     let horizontal_height = 1;
     let center_x =
@@ -218,12 +219,7 @@ fn render_add_zones(frame: &mut Frame, zones: &[AddZone]) {
             Block::default().style(Style::default().bg(Color::LightCyan)),
             to_ratatui(zone.rect),
         );
-        let marker = Rect {
-            x: zone.rect.x.saturating_add(zone.rect.width / 2),
-            y: zone.rect.y.saturating_add(zone.rect.height / 2),
-            width: 1,
-            height: 1,
-        };
+        let marker = add_marker_rect(zone.rect);
         frame.render_widget(
             Paragraph::new("+").alignment(Alignment::Center).style(
                 Style::default()
@@ -233,6 +229,15 @@ fn render_add_zones(frame: &mut Frame, zones: &[AddZone]) {
             ),
             to_ratatui(marker),
         );
+    }
+}
+
+fn add_marker_rect(zone: Rect) -> Rect {
+    Rect {
+        x: zone.x.saturating_add(zone.width / 2),
+        y: zone.y.saturating_add(zone.height / 2),
+        width: 1,
+        height: 1,
     }
 }
 
@@ -495,7 +500,16 @@ mod tests {
         });
         let left = zones.iter().find(|zone| zone.edge == Edge::Left).unwrap();
         let top = zones.iter().find(|zone| zone.edge == Edge::Top).unwrap();
-        assert_eq!((left.rect.width, left.rect.height), (2, 4));
+        assert_eq!((left.rect.width, left.rect.height), (3, 3));
         assert_eq!((top.rect.width, top.rect.height), (7, 1));
+        assert_eq!(
+            add_marker_rect(left.rect),
+            Rect {
+                x: left.rect.x + 1,
+                y: left.rect.y + 1,
+                width: 1,
+                height: 1,
+            }
+        );
     }
 }
