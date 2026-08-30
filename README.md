@@ -8,6 +8,8 @@ A visual layout editor for live [Herdr](https://herdr.dev/) panes. Drag to
 rearrange, resize splits, add shells, and apply fixed presets without
 restarting agents or losing pane state.
 
+[![herdr-grid demo: rearrange panes, apply a preset, and add shells](docs/images/herdr-grid-demo.gif)](docs/images/herdr-grid-demo.webm)
+
 ## Quick start
 
 ```sh
@@ -20,8 +22,8 @@ The editor opens over the active tab and performs no writes until you press
 preserved. Apply validates the live layout and attempts recovery if an
 operation fails.
 
-Use `prefix + t` for one-key access after adding the optional binding described
-under [Usage](#optional-shortcut-prefix--t).
+For one-key access, add the [`prefix + t` shortcut](#optional-shortcut-prefix--t)
+after installation.
 
 ## Screenshots
 
@@ -82,21 +84,15 @@ herdr plugin install thuanlm215/herdr-grid
 Herdr clones the repository, shows the manifest for review, builds the release
 binary, and registers the plugin.
 
-### Local development
+### Optional shortcut: `prefix + t`
 
-From a local checkout, build the release binary and link the plugin:
-
-```sh
-git clone https://github.com/thuanlm215/herdr-grid.git
-cd herdr-grid
-cargo build --release --locked
-herdr plugin link . --enabled
-```
-
-If the plugin was previously linked in disabled mode, enable it with:
+Run once to bind `prefix + t` (usually `Ctrl+b`, then `t`):
 
 ```sh
-herdr plugin enable herdr-grid
+herdr_grid_config="${HERDR_CONFIG_PATH:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config.toml}"
+mkdir -p "$(dirname "$herdr_grid_config")"
+printf '\n[[keys.command]]\nkey = "prefix+t"\ntype = "plugin_action"\ncommand = "herdr-grid.open"\n' >> "$herdr_grid_config"
+herdr config check && herdr server reload-config
 ```
 
 ## Usage
@@ -109,38 +105,6 @@ herdr plugin action invoke open --plugin herdr-grid
 
 The editor reads the tab underneath the popup and performs no writes until
 you apply the preview.
-
-### Optional shortcut: `prefix + t`
-
-Run the following block to bind `prefix + t` to the layout editor. It appends
-the binding without overwriting the rest of your Herdr configuration, avoids
-adding it twice, and stops if another command already uses the same key:
-
-```sh
-herdr_grid_config="${HERDR_CONFIG_PATH:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config.toml}"
-mkdir -p "$(dirname "$herdr_grid_config")"
-touch "$herdr_grid_config"
-
-if grep -Fq 'command = "herdr-grid.open"' "$herdr_grid_config"; then
-  echo "herdr-grid shortcut is already configured"
-elif grep -Eq '^[[:space:]]*key[[:space:]]*=[[:space:]]*"prefix\+t"' "$herdr_grid_config"; then
-  echo "prefix+t is already assigned; edit $herdr_grid_config manually" >&2
-  exit 1
-else
-  tee -a "$herdr_grid_config" >/dev/null <<'EOF'
-
-[[keys.command]]
-key = "prefix+t"
-type = "plugin_action"
-command = "herdr-grid.open"
-EOF
-  herdr config check
-  herdr server reload-config
-fi
-```
-
-Herdr's default prefix is `Ctrl+b`, so press `Ctrl+b`, release it, then press
-`t`. If you configured a different prefix, use that key followed by `t`.
 
 ### Controls
 
@@ -165,23 +129,6 @@ Herdr's default prefix is `Ctrl+b`, so press `Ctrl+b`, release it, then press
 | `Enter` | Validate and apply preview |
 | `Esc` or `q` in the normal mode | Cancel without applying |
 | `?` | Open the complete in-app help |
-
-### Layout presets
-
-The preset gallery contains equal 2×2, 3×2, 2×3, and 3×3 grids plus common
-main-pane arrangements: main-left/right/top/bottom with two companion panes,
-and a main pane beside a 2×2 grid.
-
-Use arrow keys or `h/j/k/l` to choose a preset, `Tab` to switch between
-**Current tab** and **New workspace**, and `Enter` to preview it. The current
-tab option keeps all existing panes and creates draft shells for missing
-slots; presets with too few slots are disabled. In a main-pane preset, the
-currently selected pane becomes the main pane. The new-workspace option
-creates every slot as a new shell and leaves the source workspace untouched.
-
-After returning to the normal editor, you can rearrange the preview further.
-Press `Enter` to apply/create it, `u` to return from a new-workspace preview,
-or `Esc` to cancel without writing.
 
 For a read-only connectivity check from inside a Herdr-managed pane:
 
@@ -218,6 +165,21 @@ verification fails, the plugin closes only that newly created workspace. The
 source workspace is never rearranged.
 
 ## Development
+
+### Local development
+
+Build and link a local checkout:
+
+```sh
+git clone https://github.com/thuanlm215/herdr-grid.git
+cd herdr-grid
+cargo build --release --locked
+herdr plugin link . --enabled
+```
+
+If it was linked in disabled mode, run `herdr plugin enable herdr-grid`.
+
+### Quality checks
 
 Run the complete local quality gate:
 
