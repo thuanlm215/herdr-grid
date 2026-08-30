@@ -32,7 +32,7 @@ fn manifest_declares_build_popup_and_launcher() {
     let manifest: Manifest = toml::from_str(include_str!("../herdr-plugin.toml")).unwrap();
     assert_eq!(manifest.id, "herdr-grid");
     assert_eq!(manifest.name, "herdr-grid");
-    assert_eq!(manifest.version, "0.1.0");
+    assert_eq!(manifest.version, env!("CARGO_PKG_VERSION"));
     assert_eq!(manifest.min_herdr_version, "0.8.2");
     assert_eq!(manifest.platforms, ["linux", "macos"]);
     assert_eq!(

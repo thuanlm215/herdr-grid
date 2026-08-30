@@ -1,6 +1,6 @@
 id = "herdr-grid"
 name = "herdr-grid"
-version = "0.1.0"
+version = "0.1.1"
 description = "Drag-and-drop editor for the active tab's live pane layout"
 min_herdr_version = "0.8.2"
 platforms = ["linux", "macos"]

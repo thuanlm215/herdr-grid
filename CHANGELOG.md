@@ -6,6 +6,13 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-30
+
+### Added
+
+- Native ARM64 Linux release artifact using the statically linked
+  `aarch64-unknown-linux-musl` target.
+
 ## [0.1.0] - 2026-08-30
 
 ### Added
@@ -16,5 +23,6 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Pre-apply stale-state validation and post-operation verification.
 - Transaction recovery for ambiguous or partially completed Herdr operations.
 
-[Unreleased]: https://github.com/thuanlm215/herdr-grid/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/thuanlm215/herdr-grid/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/thuanlm215/herdr-grid/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/thuanlm215/herdr-grid/releases/tag/v0.1.0

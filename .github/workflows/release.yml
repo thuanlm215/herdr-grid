@@ -20,6 +20,8 @@ jobs:
             triple: x86_64-apple-darwin
           - os: ubuntu-latest
             triple: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            triple: aarch64-unknown-linux-musl
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7

@@ -35,7 +35,7 @@ the processes running inside those panes.
 - Rust stable and Cargo when building from source
 
 Windows is not supported yet. Tagged releases provide prebuilt binaries for
-ARM64 and AMD64 macOS, plus statically linked AMD64 Linux.
+ARM64 and AMD64 macOS, plus statically linked ARM64 and AMD64 Linux.
 
 ## Install
 
