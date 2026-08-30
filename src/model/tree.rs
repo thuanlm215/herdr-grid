@@ -238,6 +238,26 @@ impl LayoutNode {
             Self::Pane { .. } => None,
         }
     }
+    pub fn balance_splits(&mut self) -> bool {
+        fn visit(node: &mut LayoutNode) -> bool {
+            match node {
+                LayoutNode::Pane { .. } => false,
+                LayoutNode::Split {
+                    ratio,
+                    first,
+                    second,
+                    ..
+                } => {
+                    let first_changed = visit(first);
+                    let second_changed = visit(second);
+                    let ratio_changed = (*ratio - 0.5).abs() > f64::EPSILON;
+                    *ratio = 0.5;
+                    first_changed || second_changed || ratio_changed
+                }
+            }
+        }
+        visit(self)
+    }
     pub fn insert_second(
         &mut self,
         target: &str,
@@ -356,5 +376,17 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn balance_sets_every_split_to_half() {
+        let mut t = tree();
+        t.set_ratio(&[], 0.8).unwrap();
+        t.set_ratio(&[true], 0.7).unwrap();
+        assert!(t.balance_splits());
+        assert_eq!(t.ratio_at(&[]), Some(0.5));
+        assert_eq!(t.ratio_at(&[true]), Some(0.5));
+        assert!(!t.balance_splits());
+        t.validate().unwrap();
     }
 }

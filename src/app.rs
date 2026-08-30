@@ -76,6 +76,12 @@ impl App {
         }
         self.repair_selection();
     }
+    pub fn balance_splits(&mut self) {
+        let old = self.preview.clone();
+        if self.preview.balance_splits() {
+            self.undo.push(old);
+        }
+    }
     pub fn resize_selected_split(&mut self, delta: f64) {
         let path = self.selected_split.clone();
         let mut node = &self.preview;

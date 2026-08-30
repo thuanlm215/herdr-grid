@@ -70,6 +70,10 @@ pub fn key(app: &mut App, k: KeyEvent) -> Action {
             app.reset();
             Action::Continue
         }
+        KeyCode::Char('=') => {
+            app.balance_splits();
+            Action::Continue
+        }
         KeyCode::Char('[') => {
             app.resize_selected_split(-0.05);
             Action::Continue
@@ -459,5 +463,27 @@ mod tests {
         assert!(!app.add_mode);
         assert_eq!(app.preview.pane_ids(), ["a", "b"]);
         assert!(app.undo.is_empty());
+    }
+
+    #[test]
+    fn balance_is_available_only_in_normal_mode() {
+        let mut normal = app();
+        normal.preview.set_ratio(&[], 0.8).unwrap();
+        key(
+            &mut normal,
+            KeyEvent::new(KeyCode::Char('='), crossterm::event::KeyModifiers::NONE),
+        );
+        assert_eq!(normal.preview.ratio_at(&[]), Some(0.5));
+        assert_eq!(normal.undo.len(), 1);
+
+        let mut adding = app();
+        adding.preview.set_ratio(&[], 0.8).unwrap();
+        adding.toggle_add_mode();
+        key(
+            &mut adding,
+            KeyEvent::new(KeyCode::Char('='), crossterm::event::KeyModifiers::NONE),
+        );
+        assert_eq!(adding.preview.ratio_at(&[]), Some(0.8));
+        assert!(adding.undo.is_empty());
     }
 }

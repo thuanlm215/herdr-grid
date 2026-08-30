@@ -33,6 +33,7 @@ preview is applied.
 - Drop on an edge to create a new horizontal or vertical relationship.
 - Drag split dividers to resize panes.
 - Preview one or more new shell panes and create them together on Apply.
+- Balance every split in the preview to 50/50 with one key.
 - Rearrange and resize the layout with keyboard controls.
 - Undo or reset changes before they reach Herdr.
 - Apply the preview explicitly with `Enter`; cancel safely with `Esc`.
@@ -140,6 +141,7 @@ Herdr's default prefix is `Ctrl+b`, so press `Ctrl+b`, release it, then press
 | `[` / `]` | Resize selected split |
 | `u` | Undo last preview edit |
 | `r` | Restore the initial preview |
+| `=` in the normal mode | Balance every split in the preview to 50/50 |
 | `Enter` | Validate and apply preview |
 | `Esc` or `q` in the normal mode | Cancel without applying |
 | `?` | Open the complete in-app help |

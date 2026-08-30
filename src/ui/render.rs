@@ -339,7 +339,9 @@ fn footer(app: &App) -> String {
     if app.carrying.is_some() {
         return format!("Arrows choose target · Space Drop · Esc Release · ? Help{modified}");
     }
-    format!("Drag to arrange · n Add pane · Enter Apply · Esc Cancel · ? Help{modified}")
+    format!(
+        "Drag to arrange · n Add pane · = Balance · Enter Apply · Esc Cancel · ? Help{modified}"
+    )
 }
 
 fn render_help(frame: &mut Frame) {
@@ -356,6 +358,7 @@ fn render_help(frame: &mut Frame) {
         Line::from("  Arrows / h j k l   Select spatially"),
         Line::from("  Space              Pick up / drop"),
         Line::from("  [ / ]              Resize selected split"),
+        Line::from("  =                  Balance all splits 50/50"),
         Line::from("  u / r              Undo / reset preview"),
         Line::from("  Enter              Apply preview"),
         Line::from("  Esc                Cancel or dismiss"),

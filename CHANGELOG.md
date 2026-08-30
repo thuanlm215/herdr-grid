@@ -6,6 +6,10 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Balance every layout split to 50/50 from normal mode with `=`.
+
 ## [0.2.1] - 2026-08-30
 
 ### Fixed
