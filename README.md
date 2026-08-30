@@ -27,11 +27,13 @@ preview is applied.
 
 ![Add pane mode showing a green draft pane and edge controls](docs/images/add-pane-mode.png)
 
-### Apply a layout preset
+### Layout presets
 
 Press `p` to open a visual gallery of fixed layouts, including 2×2 and 3×3
 grids and asymmetric main-pane layouts. Apply the preset to the current tab or
 use it to create a fresh workspace.
+
+![Layout preset gallery with nine fixed pane arrangements](docs/images/layout-presets.png)
 
 ## Features
 
@@ -160,8 +162,6 @@ Herdr's default prefix is `Ctrl+b`, so press `Ctrl+b`, release it, then press
 The preset gallery contains equal 2×2, 3×2, 2×3, and 3×3 grids plus common
 main-pane arrangements: main-left/right/top/bottom with two companion panes,
 and a main pane beside a 2×2 grid.
-
-![Layout preset gallery with nine fixed pane arrangements](docs/images/layout-presets.png)
 
 Use arrow keys or `h/j/k/l` to choose a preset, `Tab` to switch between
 **Current tab** and **New workspace**, and `Enter` to preview it. The current
