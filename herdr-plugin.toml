@@ -1,13 +1,13 @@
 id = "herdr-grid"
 name = "herdr-grid"
-version = "0.3.0"
+version = "0.3.1"
 description = "Visual pane layout editor with drag-and-drop, new shells, and fixed presets"
 min_herdr_version = "0.8.2"
 platforms = ["linux", "macos"]
 
 [[build]]
 platforms = ["linux", "macos"]
-command = ["cargo", "build", "--release", "--locked"]
+command = ["/bin/sh", "scripts/fetch-or-build.sh"]
 
 [[panes]]
 id = "grid"

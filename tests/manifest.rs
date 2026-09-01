@@ -37,7 +37,7 @@ fn manifest_declares_build_popup_and_launcher() {
     assert_eq!(manifest.platforms, ["linux", "macos"]);
     assert_eq!(
         manifest.build[0].command,
-        ["cargo", "build", "--release", "--locked"]
+        ["/bin/sh", "scripts/fetch-or-build.sh"]
     );
     assert_eq!(manifest.panes[0].id, "grid");
     assert_eq!(manifest.panes[0].placement, "popup");

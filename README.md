@@ -68,10 +68,11 @@ use it to create a fresh workspace.
 - Herdr 0.8.2 or newer
 - Linux or macOS
 - A terminal with mouse-event support
-- Rust stable and Cargo when building from source
+- Either `curl`/`wget` plus `sha256sum`/`shasum`, or Rust stable and Cargo
 
-Windows is not supported yet. Tagged releases provide prebuilt binaries for
-ARM64 and AMD64 macOS, plus statically linked ARM64 and AMD64 Linux.
+Windows is not supported yet. Installation downloads a verified prebuilt
+binary for ARM64 or AMD64 Linux and macOS. Rust stable and Cargo are required
+only when no matching release is available or when building from source.
 
 ## Install
 
@@ -81,8 +82,10 @@ Install directly from GitHub with Herdr:
 herdr plugin install thuanlm215/herdr-grid
 ```
 
-Herdr clones the repository, shows the manifest for review, builds the release
-binary, and registers the plugin.
+Herdr clones the repository, shows the manifest for review, downloads the
+matching release binary, verifies its SHA-256 checksum, and registers the
+plugin. If the download is unavailable, installation falls back to a locked
+Cargo build.
 
 ### Optional shortcut: `prefix + t`
 

@@ -6,6 +6,14 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-01
+
+### Added
+
+- Install a matching prebuilt binary on Linux and macOS, verify it against the
+  release SHA-256 checksums, and fall back to a locked Cargo build when an
+  asset is unavailable.
+
 ## [0.3.0] - 2026-08-30
 
 ### Added
@@ -52,7 +60,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Pre-apply stale-state validation and post-operation verification.
 - Transaction recovery for ambiguous or partially completed Herdr operations.
 
-[Unreleased]: https://github.com/thuanlm215/herdr-grid/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/thuanlm215/herdr-grid/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/thuanlm215/herdr-grid/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/thuanlm215/herdr-grid/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/thuanlm215/herdr-grid/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/thuanlm215/herdr-grid/compare/v0.1.1...v0.2.0

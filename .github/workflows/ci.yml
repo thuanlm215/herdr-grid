@@ -50,7 +50,9 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: validate launcher shell
-        run: bash -n scripts/run-pane.sh
+        run: |
+          bash -n scripts/run-pane.sh
+          sh -n scripts/fetch-or-build.sh
       - name: package crate
         run: cargo package --locked
 
