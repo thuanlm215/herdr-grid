@@ -8,12 +8,13 @@ repository.
 
 The codebase is divided into four layers:
 
-- `model`: a pure binary split tree and safe edit operations;
+- `model`: pure live and reusable binary split trees plus safe edit operations;
 - `ui`: Ratatui rendering, geometry, hit testing, mouse input, and keyboard
   input;
 - `herdr`: protocol parsing, operation planning, transaction execution, and
   recovery;
 - `app`: preview state, selection, undo, reset, and Apply coordination.
+- `saved`: versioned custom-layout validation and atomic persistence.
 
 The model has no Herdr or terminal dependency. This keeps preview edits and
 planner tests deterministic.
@@ -57,18 +58,19 @@ IDs fill the preset slots and any missing slots receive draft IDs. A preset
 with fewer slots than the current preview is rejected rather than deleting a
 pane. For main-pane variants, the selected pane is assigned to the main slot.
 
-A new-workspace preset follows an isolated creation transaction:
+Saved layouts use a separate tree whose leaves are numbered slots rather than
+Herdr pane IDs. Capture assigns slot numbers in visual reading order and stores
+the selected pane's slot as the anchor. Reuse assigns the currently selected
+pane to that anchor, maps the remaining panes in visual order, and fills empty
+slots with drafts. A layout with fewer slots than existing panes is rejected;
+saved layouts never imply deletion.
 
-1. Create an unfocused workspace and use its returned root pane as the first
-   logical slot.
-2. Materialize the preset tree through ordered `pane.split` calls, retaining
-   every returned pane ID.
-3. Verify pane membership after every split and verify the final topology and
-   ratios.
-4. Focus the new workspace only after successful verification.
-
-If any step fails, the transaction closes only the workspace it just created.
-The source workspace is never mutated by this path.
+The global custom-layout catalog is a bounded, versioned JSON document under
+`HERDR_PLUGIN_CONFIG_DIR`. It contains geometry and display names only. Loads
+validate schema version, names, tree depth, ratios, slot uniqueness, and
+catalog size. Writes use a temporary file in the same directory followed by an
+atomic rename. A malformed or unknown-schema catalog disables writes for that
+run so the original file cannot be overwritten.
 
 ## Validation and reconciliation
 

@@ -2,9 +2,24 @@ use crate::{
     herdr::{ApplyProgress, HerdrClient, Snapshot, Transaction},
     model::{
         is_draft_pane, Edge, Geometry, LayoutNode, PaneId, PresetKind, Rect, SplitPath,
-        DRAFT_PANE_PREFIX,
+        TemplateNode, DRAFT_PANE_PREFIX,
     },
+    saved::{CatalogError, SavedCatalog, SavedLayout, MAX_LAYOUT_NAME_CHARS, MAX_SAVED_LAYOUTS},
 };
+use std::time::{Duration, Instant};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MessageKind {
+    Error,
+    Success,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AppMessage {
+    pub kind: MessageKind,
+    pub text: String,
+    pub expires_at: Option<Instant>,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DropPreview {
@@ -13,15 +28,27 @@ pub struct DropPreview {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PresetDestination {
-    CurrentTab,
-    NewWorkspace,
+pub enum PresetPage {
+    BuiltIn,
+    Saved,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PresetPicker {
     pub selected: usize,
-    pub destination: PresetDestination,
+    pub page: PresetPage,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NamePromptKind {
+    Save,
+    Rename { index: usize },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NamePrompt {
+    pub kind: NamePromptKind,
+    pub value: String,
 }
 
 pub struct App {
@@ -32,21 +59,24 @@ pub struct App {
     pub carrying: Option<PaneId>,
     pub drop_edge: Option<Edge>,
     pub selected_split: SplitPath,
-    pub message: Option<String>,
+    pub message: Option<AppMessage>,
     pub show_help: bool,
     pub dragging: Option<PaneId>,
     pub drop_preview: Option<DropPreview>,
     pub progress: Option<ApplyProgress>,
-    pub add_mode: bool,
-    pub add_target: Option<PaneId>,
     pub preset_picker: Option<PresetPicker>,
-    pub pending_new_workspace: bool,
+    pub saved_catalog: SavedCatalog,
+    pub name_prompt: Option<NamePrompt>,
+    pub delete_confirm: Option<usize>,
     next_draft: u64,
-    workspace_source_preview: Option<LayoutNode>,
-    workspace_source_selected: Option<PaneId>,
+    catalog_backup: Option<SavedCatalog>,
 }
 impl App {
     pub fn new(snapshot: Snapshot) -> Self {
+        Self::with_catalog(snapshot, SavedCatalog::default())
+    }
+
+    pub fn with_catalog(snapshot: Snapshot, saved_catalog: SavedCatalog) -> Self {
         let selected = snapshot.focused_pane_id.clone();
         let preview = snapshot.tree.clone();
         Self {
@@ -62,20 +92,43 @@ impl App {
             dragging: None,
             drop_preview: None,
             progress: None,
-            add_mode: false,
-            add_target: None,
             preset_picker: None,
-            pending_new_workspace: false,
+            saved_catalog,
+            name_prompt: None,
+            delete_confirm: None,
             next_draft: 1,
-            workspace_source_preview: None,
-            workspace_source_selected: None,
+            catalog_backup: None,
         }
     }
     fn edit(&mut self, f: impl FnOnce(&mut LayoutNode) -> Result<(), crate::model::ModelError>) {
         let old = self.preview.clone();
         match f(&mut self.preview) {
             Ok(()) => self.undo.push(old),
-            Err(e) => self.message = Some(e.to_string()),
+            Err(e) => self.set_error(e),
+        }
+    }
+    pub fn set_error(&mut self, error: impl ToString) {
+        self.message = Some(AppMessage {
+            kind: MessageKind::Error,
+            text: error.to_string(),
+            expires_at: None,
+        });
+    }
+    pub fn set_success(&mut self, message: impl Into<String>) {
+        self.message = Some(AppMessage {
+            kind: MessageKind::Success,
+            text: message.into(),
+            expires_at: Some(Instant::now() + Duration::from_secs(3)),
+        });
+    }
+    pub fn expire_message(&mut self) {
+        if self
+            .message
+            .as_ref()
+            .and_then(|message| message.expires_at)
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.message = None;
         }
     }
     pub fn swap(&mut self, a: &str, b: &str) {
@@ -85,26 +138,12 @@ impl App {
         self.edit(|t| t.reparent(a, b, e))
     }
     pub fn undo(&mut self) {
-        if self.pending_new_workspace {
-            if let Some(tree) = self.workspace_source_preview.take() {
-                self.preview = tree;
-            }
-            if let Some(selected) = self.workspace_source_selected.take() {
-                self.selected = selected;
-            }
-            self.pending_new_workspace = false;
-            self.repair_selection();
-            return;
-        }
         if let Some(t) = self.undo.pop() {
             self.preview = t;
             self.repair_selection();
         }
     }
     pub fn reset(&mut self) {
-        self.pending_new_workspace = false;
-        self.workspace_source_preview = None;
-        self.workspace_source_selected = None;
         if self.preview != self.snapshot.tree {
             self.undo.push(self.preview.clone());
             self.preview = self.snapshot.tree.clone()
@@ -207,70 +246,98 @@ impl App {
             self.carrying = Some(self.selected.clone())
         }
     }
-    pub fn toggle_add_mode(&mut self) {
-        self.add_mode = !self.add_mode;
-        self.add_target = None;
-        self.carrying = None;
-        self.dragging = None;
-        self.drop_preview = None;
-    }
     pub fn open_preset_picker(&mut self) {
-        let destination = if self.pending_new_workspace {
-            PresetDestination::NewWorkspace
-        } else {
-            PresetDestination::CurrentTab
-        };
-        let count = self.preset_source().pane_ids().len();
+        let count = self.preview.pane_ids().len();
         let selected = PresetKind::ALL
             .iter()
-            .position(|preset| {
-                destination == PresetDestination::NewWorkspace || preset.slots() >= count
-            })
+            .position(|preset| preset.slots() >= count)
             .unwrap_or(0);
         self.preset_picker = Some(PresetPicker {
             selected,
-            destination,
+            page: PresetPage::BuiltIn,
         });
     }
     pub fn close_preset_picker(&mut self) {
         self.preset_picker = None;
     }
     pub fn move_preset_selection(&mut self, delta: isize) {
+        let len = self.current_preset_count();
         let Some(picker) = &mut self.preset_picker else {
             return;
         };
-        let len = PresetKind::ALL.len() as isize;
+        if len == 0 {
+            picker.selected = 0;
+            return;
+        }
+        let len = len as isize;
         picker.selected = (picker.selected as isize + delta).rem_euclid(len) as usize;
     }
     pub fn select_preset(&mut self, index: usize) {
+        let len = self.current_preset_count();
         if let Some(picker) = &mut self.preset_picker {
-            if index < PresetKind::ALL.len() {
+            if index < len {
                 picker.selected = index;
             }
         }
     }
-    pub fn toggle_preset_destination(&mut self) {
+    pub fn toggle_preset_collection(&mut self) {
+        let Some(picker) = &mut self.preset_picker else {
+            return;
+        };
+        picker.page = match picker.page {
+            PresetPage::BuiltIn => PresetPage::Saved,
+            PresetPage::Saved => PresetPage::BuiltIn,
+        };
+        picker.selected = 0;
+    }
+
+    pub fn set_preset_collection(&mut self, page: PresetPage) {
         if let Some(picker) = &mut self.preset_picker {
-            picker.destination = match picker.destination {
-                PresetDestination::CurrentTab => PresetDestination::NewWorkspace,
-                PresetDestination::NewWorkspace => PresetDestination::CurrentTab,
-            };
+            picker.page = page;
+            picker.selected = 0;
         }
     }
-    pub fn preset_source_count(&self) -> usize {
-        self.preset_source().pane_ids().len()
+
+    pub fn current_preset_count(&self) -> usize {
+        match self.preset_picker.as_ref().map(|picker| picker.page) {
+            Some(PresetPage::BuiltIn) | None => PresetKind::ALL.len(),
+            Some(PresetPage::Saved) => self.saved_catalog.layouts.len().min(MAX_SAVED_LAYOUTS),
+        }
     }
-    pub fn preset_enabled(&self, preset: PresetKind, destination: PresetDestination) -> bool {
-        destination == PresetDestination::NewWorkspace
-            || self.preset_source_count() <= preset.slots()
+
+    pub fn saved_layout_at_picker(&self) -> Option<(usize, &SavedLayout)> {
+        let picker = self.preset_picker.as_ref()?;
+        let PresetPage::Saved = picker.page else {
+            return None;
+        };
+        let index = picker.selected;
+        self.saved_catalog
+            .layouts
+            .get(index)
+            .map(|layout| (index, layout))
+    }
+    pub fn preset_source_count(&self) -> usize {
+        self.preview.pane_ids().len()
+    }
+    pub fn preset_enabled(&self, preset: PresetKind) -> bool {
+        self.preset_source_count() <= preset.slots()
+    }
+    pub fn saved_preset_enabled(&self, layout: &SavedLayout) -> bool {
+        self.preset_source_count() <= layout.slots()
     }
     pub fn accept_selected_preset(&mut self) {
         let Some(picker) = self.preset_picker.clone() else {
             return;
         };
-        let preset = PresetKind::ALL[picker.selected];
-        if !self.preset_enabled(preset, picker.destination) {
-            self.message = Some(format!(
+        if let PresetPage::Saved = picker.page {
+            self.accept_selected_saved_preset();
+            return;
+        }
+        let Some(preset) = PresetKind::ALL.get(picker.selected).copied() else {
+            return;
+        };
+        if !self.preset_enabled(preset) {
+            self.set_error(format!(
                 "{} has {} slots but the current preview has {} panes",
                 preset.title(),
                 preset.slots(),
@@ -278,23 +345,168 @@ impl App {
             ));
             return;
         }
-        let result = match picker.destination {
-            PresetDestination::CurrentTab => self.apply_current_tab_preset(preset),
-            PresetDestination::NewWorkspace => self.apply_new_workspace_preset(preset),
-        };
+        let result = self.apply_current_tab_preset(preset);
         match result {
             Ok(()) => self.preset_picker = None,
-            Err(error) => self.message = Some(error.to_string()),
+            Err(error) => self.set_error(error),
         }
+    }
+    fn accept_selected_saved_preset(&mut self) {
+        let Some((_, layout)) = self.saved_layout_at_picker() else {
+            return;
+        };
+        let layout = layout.clone();
+        if !self.saved_preset_enabled(&layout) {
+            self.set_error(format!(
+                "{} has {} slots but the current preview has {} panes",
+                layout.name,
+                layout.slots(),
+                self.preset_source_count()
+            ));
+            return;
+        }
+        let result = self.apply_current_saved_preset(&layout);
+        match result {
+            Ok(()) => self.preset_picker = None,
+            Err(error) => self.set_error(error),
+        }
+    }
+
+    fn apply_current_saved_preset(
+        &mut self,
+        layout: &SavedLayout,
+    ) -> Result<(), crate::model::TemplateError> {
+        let source = self.preview.clone();
+        let selected = self.selected.clone();
+        let mut next_draft = self.next_draft;
+        let target =
+            layout
+                .tree
+                .instantiate_current(layout.anchor_slot, &source, &selected, || {
+                    let id = format!("{DRAFT_PANE_PREFIX}{next_draft}");
+                    next_draft += 1;
+                    id
+                })?;
+        self.next_draft = next_draft;
+        self.undo.push(source);
+        self.preview = target;
+        self.selected = selected;
+        self.repair_selection();
+        Ok(())
+    }
+
+    pub fn open_save_prompt(&mut self) {
+        self.message = None;
+        self.name_prompt = Some(NamePrompt {
+            kind: NamePromptKind::Save,
+            value: String::new(),
+        });
+    }
+
+    pub fn open_rename_prompt(&mut self) {
+        let Some((index, layout)) = self.saved_layout_at_picker() else {
+            return;
+        };
+        self.name_prompt = Some(NamePrompt {
+            kind: NamePromptKind::Rename { index },
+            value: layout.name.clone(),
+        });
+    }
+
+    pub fn request_delete_saved(&mut self) {
+        if let Some((index, _)) = self.saved_layout_at_picker() {
+            self.delete_confirm = Some(index);
+        }
+    }
+
+    pub fn append_prompt_char(&mut self, ch: char) {
+        if ch.is_control() {
+            return;
+        }
+        if let Some(prompt) = &mut self.name_prompt {
+            if prompt.value.chars().count() < MAX_LAYOUT_NAME_CHARS {
+                prompt.value.push(ch);
+            }
+        }
+    }
+
+    pub fn backspace_prompt(&mut self) {
+        if let Some(prompt) = &mut self.name_prompt {
+            prompt.value.pop();
+        }
+    }
+
+    pub fn cancel_prompt(&mut self) {
+        self.name_prompt = None;
+    }
+
+    pub fn commit_name_prompt(&mut self) -> Result<bool, CatalogError> {
+        let Some(prompt) = self.name_prompt.clone() else {
+            return Ok(false);
+        };
+        let old = self.saved_catalog.clone();
+        match prompt.kind {
+            NamePromptKind::Save => {
+                let (tree, anchor) = TemplateNode::capture(&self.preview, &self.selected)?;
+                self.saved_catalog.add(&prompt.value, tree, anchor)?;
+            }
+            NamePromptKind::Rename { index } => {
+                self.saved_catalog.rename(index, &prompt.value)?;
+            }
+        }
+        self.catalog_backup = Some(old);
+        self.name_prompt = None;
+        self.set_success(match prompt.kind {
+            NamePromptKind::Save => "Custom layout saved",
+            NamePromptKind::Rename { .. } => "Custom layout renamed",
+        });
+        Ok(true)
+    }
+
+    pub fn confirm_delete_saved(&mut self) -> Result<bool, CatalogError> {
+        let Some(index) = self.delete_confirm.take() else {
+            return Ok(false);
+        };
+        let old = self.saved_catalog.clone();
+        self.saved_catalog.delete(index)?;
+        self.catalog_backup = Some(old);
+        if let Some(picker) = &mut self.preset_picker {
+            let count = match picker.page {
+                PresetPage::BuiltIn => PresetKind::ALL.len(),
+                PresetPage::Saved => self.saved_catalog.layouts.len().min(MAX_SAVED_LAYOUTS),
+            };
+            picker.selected = picker.selected.min(count.saturating_sub(1));
+        }
+        self.set_success("Custom layout deleted");
+        Ok(true)
+    }
+
+    pub fn has_catalog_change(&self) -> bool {
+        self.catalog_backup.is_some()
+    }
+
+    pub fn catalog_saved(&mut self) {
+        self.catalog_backup = None;
+    }
+
+    pub fn catalog_save_failed(&mut self, error: impl ToString) {
+        if let Some(previous) = self.catalog_backup.take() {
+            self.saved_catalog = previous;
+        }
+        self.set_error(format!(
+            "Could not save custom layouts: {}",
+            error.to_string()
+        ));
     }
     fn apply_current_tab_preset(
         &mut self,
         preset: PresetKind,
     ) -> Result<(), crate::model::ModelError> {
-        let source = self.preset_source().clone();
+        let source = self.preview.clone();
+        let source_selected = self.selected.clone();
         let mut ids = source.pane_ids();
         if preset.has_main() {
-            if let Some(index) = ids.iter().position(|id| id == &self.selected) {
+            if let Some(index) = ids.iter().position(|id| id == &source_selected) {
                 let main = ids.remove(index);
                 ids.insert(0, main);
             }
@@ -305,54 +517,14 @@ impl App {
         let target = preset.build(&ids)?;
         self.undo.push(source);
         self.preview = target;
-        self.pending_new_workspace = false;
-        self.workspace_source_preview = None;
-        self.workspace_source_selected = None;
+        self.selected = source_selected;
         self.repair_selection();
         Ok(())
-    }
-    fn apply_new_workspace_preset(
-        &mut self,
-        preset: PresetKind,
-    ) -> Result<(), crate::model::ModelError> {
-        if !self.pending_new_workspace {
-            self.workspace_source_preview = Some(self.preview.clone());
-            self.workspace_source_selected = Some(self.selected.clone());
-        }
-        let ids = (0..preset.slots())
-            .map(|_| self.fresh_draft_id())
-            .collect::<Vec<_>>();
-        self.preview = preset.build(&ids)?;
-        self.selected = ids[0].clone();
-        self.pending_new_workspace = true;
-        Ok(())
-    }
-    fn preset_source(&self) -> &LayoutNode {
-        self.workspace_source_preview
-            .as_ref()
-            .unwrap_or(&self.preview)
     }
     fn fresh_draft_id(&mut self) -> PaneId {
         let id = format!("{DRAFT_PANE_PREFIX}{}", self.next_draft);
         self.next_draft += 1;
         id
-    }
-    pub fn exit_add_mode(&mut self) {
-        self.add_mode = false;
-        self.add_target = None;
-    }
-    pub fn cancel_add_mode(&mut self) {
-        self.preview = self.snapshot.tree.clone();
-        self.undo.clear();
-        self.carrying = None;
-        self.dragging = None;
-        self.drop_preview = None;
-        self.exit_add_mode();
-        self.repair_selection();
-    }
-    pub fn select_add_target(&mut self, pane_id: PaneId) {
-        self.selected = pane_id.clone();
-        self.add_target = Some(pane_id);
     }
     pub fn add_draft(&mut self, target: &str, edge: Edge) {
         let id = self.fresh_draft_id();
@@ -360,15 +532,14 @@ impl App {
         match self.preview.insert_at_edge(target, id.clone(), edge, 0.5) {
             Ok(_) => {
                 self.undo.push(old);
-                self.selected = id.clone();
-                self.add_target = Some(id);
+                self.selected = id;
             }
-            Err(error) => self.message = Some(error.to_string()),
+            Err(error) => self.set_error(error),
         }
     }
     pub fn remove_selected_draft(&mut self) {
         if !is_draft_pane(&self.selected) {
-            self.message = Some("Only new draft panes can be deleted here".into());
+            self.set_error("Only new draft panes can be deleted here");
             return;
         }
         let selected = self.selected.clone();
@@ -377,9 +548,8 @@ impl App {
             Ok(_) => {
                 self.undo.push(old);
                 self.repair_selection();
-                self.add_target = None;
             }
-            Err(error) => self.message = Some(error.to_string()),
+            Err(error) => self.set_error(error),
         }
     }
     fn repair_selection(&mut self) {
@@ -391,13 +561,6 @@ impl App {
                 .or_else(|| ids.first())
                 .cloned()
                 .unwrap_or_default();
-        }
-        if self
-            .add_target
-            .as_ref()
-            .is_some_and(|id| !ids.iter().any(|pane| pane == id))
-        {
-            self.add_target = None;
         }
     }
     pub async fn apply<C: HerdrClient>(&mut self, c: &C) -> anyhow::Result<()> {

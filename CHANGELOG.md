@@ -6,6 +6,32 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-04
+
+### Added
+
+- Save the current preview as a reusable custom layout with a selected-pane
+  anchor.
+- Browse saved layouts alongside built-in presets and apply them to the current
+  tab.
+- Rename and delete custom layouts from the preset gallery.
+- Persist geometry-only layouts in a bounded, versioned JSON catalog using
+  atomic writes.
+- Add mouse-first Editor and Presets tabs with distinct, contextual actions.
+- Show add controls directly on the selected pane without a separate Add mode.
+- Limit custom layouts to a single nine-card gallery.
+- Show a contextual Delete action when a draft pane is selected.
+
+### Changed
+
+- Shorten the contextual footer and remove the redundant Reset toolbar button;
+  the `r` shortcut remains available.
+
+### Removed
+
+- Remove the new-workspace preset destination to keep preset selection focused
+  on the active tab.
+
 ## [0.3.1] - 2026-09-01
 
 ### Added
@@ -60,7 +86,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Pre-apply stale-state validation and post-operation verification.
 - Transaction recovery for ambiguous or partially completed Herdr operations.
 
-[Unreleased]: https://github.com/thuanlm215/herdr-grid/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/thuanlm215/herdr-grid/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/thuanlm215/herdr-grid/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/thuanlm215/herdr-grid/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/thuanlm215/herdr-grid/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/thuanlm215/herdr-grid/compare/v0.2.0...v0.2.1

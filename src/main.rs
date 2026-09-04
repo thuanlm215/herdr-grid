@@ -9,7 +9,8 @@ use crossterm::{
 };
 use herdr_grid::{
     app::App,
-    herdr::{create_workspace_layout, CliClient, HerdrClient, Transaction},
+    herdr::{CliClient, HerdrClient, Transaction},
+    saved::{PresetStore, SavedCatalog},
     ui::{draw, key, mouse, Action},
 };
 use std::{io::stdout, time::Duration};
@@ -47,9 +48,22 @@ async fn main() -> anyhow::Result<()> {
         );
         return Ok(());
     }
-    run(snapshot, &client).await
+    let (store, catalog, catalog_error) = match PresetStore::from_env() {
+        Ok(store) => match store.load() {
+            Ok(catalog) => (Some(store), catalog, None),
+            Err(error) => (None, SavedCatalog::default(), Some(error.to_string())),
+        },
+        Err(error) => (None, SavedCatalog::default(), Some(error.to_string())),
+    };
+    run(snapshot, &client, store, catalog, catalog_error).await
 }
-async fn run(snapshot: herdr_grid::herdr::Snapshot, client: &CliClient) -> anyhow::Result<()> {
+async fn run(
+    snapshot: herdr_grid::herdr::Snapshot,
+    client: &CliClient,
+    store: Option<PresetStore>,
+    catalog: SavedCatalog,
+    catalog_error: Option<String>,
+) -> anyhow::Result<()> {
     enable_raw_mode()?;
     let mut out = stdout();
     execute!(
@@ -60,63 +74,69 @@ async fn run(snapshot: herdr_grid::herdr::Snapshot, client: &CliClient) -> anyho
     )?;
     let _cleanup = TerminalCleanup;
     let mut term = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(out))?;
-    let mut app = App::new(snapshot);
+    let mut app = App::with_catalog(snapshot, catalog);
+    if let Some(error) = catalog_error {
+        app.set_error(format!(
+            "Custom layouts are unavailable; the existing file will not be changed: {error}"
+        ));
+    }
     let mut drag = None;
     let result = loop {
+        app.expire_message();
         let mut geo = Default::default();
         term.draw(|f| geo = draw(f, &app))?;
         if event::poll(Duration::from_millis(250))? {
-            match event::read()? {
-                Event::Key(k) => match key(&mut app, k) {
-                    Action::Continue => {}
-                    Action::Cancel => break Ok(()),
-                    Action::Apply => {
-                        if app.preview == app.snapshot.tree {
-                            break Ok(());
+            let action = match event::read()? {
+                Event::Key(k) => key(&mut app, k),
+                Event::Mouse(m) => mouse(&mut app, m, &geo, &mut drag),
+                _ => Action::Continue,
+            };
+            if app.has_catalog_change() {
+                match store.as_ref() {
+                    Some(store) => match store.save(&app.saved_catalog) {
+                        Ok(()) => app.catalog_saved(),
+                        Err(error) => app.catalog_save_failed(error),
+                    },
+                    None => app.catalog_save_failed(
+                        "storage is disabled because the catalog could not be loaded",
+                    ),
+                }
+            }
+            match action {
+                Action::Continue => {}
+                Action::Cancel => break Ok(()),
+                Action::Apply => {
+                    if app.preview == app.snapshot.tree {
+                        break Ok(());
+                    }
+                    let snapshot = app.snapshot.clone();
+                    let target = app.preview.clone();
+                    let mut render_error = None;
+                    let mut report_progress = |progress| {
+                        app.progress = Some(progress);
+                        if let Err(error) = term.draw(|frame| {
+                            let _ = draw(frame, &app);
+                        }) {
+                            render_error.get_or_insert_with(|| error.to_string());
                         }
-                        let snapshot = app.snapshot.clone();
-                        let target = app.preview.clone();
-                        let pending_new_workspace = app.pending_new_workspace;
-                        let mut render_error = None;
-                        let mut report_progress = |progress| {
-                            app.progress = Some(progress);
-                            if let Err(error) = term.draw(|frame| {
-                                let _ = draw(frame, &app);
-                            }) {
-                                render_error.get_or_insert_with(|| error.to_string());
-                            }
-                        };
-                        let result = if pending_new_workspace {
-                            let cwd = snapshot
-                                .metadata
-                                .get(&snapshot.focused_pane_id)
-                                .and_then(|metadata| metadata.cwd.as_deref())
-                                .unwrap_or(".");
-                            create_workspace_layout(client, &target, cwd, &mut report_progress)
-                                .await
-                                .map(|_| ())
-                        } else {
-                            Transaction {
-                                client,
-                                snapshot: &snapshot,
-                            }
-                            .apply_with_progress(&target, &mut report_progress)
-                            .await
-                        };
-                        if let Some(error) = render_error {
-                            break Err(anyhow::anyhow!("render apply progress: {error}"));
-                        }
-                        match result {
-                            Ok(()) => break Ok(()),
-                            Err(error) => {
-                                app.progress = None;
-                                app.message = Some(error.to_string());
-                            }
+                    };
+                    let result = Transaction {
+                        client,
+                        snapshot: &snapshot,
+                    }
+                    .apply_with_progress(&target, &mut report_progress)
+                    .await;
+                    if let Some(error) = render_error {
+                        break Err(anyhow::anyhow!("render apply progress: {error}"));
+                    }
+                    match result {
+                        Ok(()) => break Ok(()),
+                        Err(error) => {
+                            app.progress = None;
+                            app.set_error(error);
                         }
                     }
-                },
-                Event::Mouse(m) => mouse(&mut app, m, &geo, &mut drag),
-                _ => {}
+                }
             }
         }
     };

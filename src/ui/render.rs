@@ -1,25 +1,27 @@
 use crate::{
-    app::{App, DropPreview, PresetDestination},
+    app::{App, DropPreview, MessageKind, NamePromptKind, PresetPage},
     herdr::ApplyProgress,
-    model::{is_draft_pane, AddZone, Edge, Geometry, PaneRect, PresetCardZone, PresetKind, Rect},
+    model::{
+        is_draft_pane, ActionZone, AddZone, Edge, Geometry, PaneRect, PresetCardZone, PresetKind,
+        Rect, UiAction,
+    },
 };
 use ratatui::{
     layout::{Alignment, Constraint, Layout},
     prelude::*,
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
 };
 
 pub fn draw(frame: &mut Frame, app: &App) -> Geometry {
     let outer = frame.area();
-    let message_height = u16::from(app.message.is_some()) * 3;
     let rows = Layout::vertical([
+        Constraint::Length(3),
         Constraint::Min(5),
-        Constraint::Length(message_height),
         Constraint::Length(2),
     ])
     .split(outer);
 
-    let canvas = rows[0];
+    let canvas = rows[1];
     let mut geo = Geometry::calculate(
         &app.preview,
         Rect {
@@ -29,41 +31,19 @@ pub fn draw(frame: &mut Frame, app: &App) -> Geometry {
             height: canvas.height,
         },
     );
+    render_toolbar(frame, app, rows[0], &mut geo);
     for pane in &geo.panes {
         render_pane(frame, app, pane);
     }
-    if app.add_mode {
-        if let Some(target) = &app.add_target {
-            if let Some(pane) = geo.panes.iter().find(|pane| &pane.pane_id == target) {
-                geo.add_zones = add_zones(pane);
-                render_add_zones(frame, &geo.add_zones);
-            }
+    if app.preset_picker.is_none() {
+        if let Some(pane) = geo.panes.iter().find(|pane| pane.pane_id == app.selected) {
+            geo.add_zones = add_zones(pane);
+            render_add_zones(frame, &geo.add_zones);
         }
     }
     render_drop_preview(frame, app, &geo);
 
-    if let Some(message) = &app.message {
-        frame.render_widget(
-            Paragraph::new(message.as_str())
-                .style(Style::default().fg(Color::Red))
-                .wrap(Wrap { trim: true })
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Red))
-                        .title(" Error · Esc dismiss "),
-                ),
-            rows[1],
-        );
-    }
-
-    let footer_style = if app.pending_new_workspace {
-        Style::default().fg(Color::LightGreen).bold()
-    } else if app.add_mode {
-        Style::default().fg(Color::LightCyan).bold()
-    } else {
-        Style::default()
-    };
+    let footer_style = Style::default();
     frame.render_widget(
         Paragraph::new(footer(app)).style(footer_style).block(
             Block::default()
@@ -74,52 +54,254 @@ pub fn draw(frame: &mut Frame, app: &App) -> Geometry {
     );
 
     if app.preset_picker.is_some() {
-        render_preset_picker(frame, app, &mut geo);
-    } else if app.show_help {
-        render_help(frame);
+        render_preset_picker(frame, app, &mut geo, canvas);
+    }
+    if app.show_help {
+        render_help(frame, app);
+    }
+    if app.message.is_some() {
+        render_message(frame, app, canvas);
+    }
+    if app.name_prompt.is_some() {
+        render_name_prompt(frame, app, &mut geo);
+    } else if app.delete_confirm.is_some() {
+        render_delete_confirm(frame, app, &mut geo);
     }
     geo
 }
 
-fn render_preset_picker(frame: &mut Frame, app: &App, geometry: &mut Geometry) {
-    let picker = app.preset_picker.as_ref().unwrap();
-    let area = centered_rect(84, 90, frame.area());
+fn render_message(frame: &mut Frame, app: &App, bounds: ratatui::layout::Rect) {
+    let message = app.message.as_ref().unwrap();
+    let (color, title) = match message.kind {
+        MessageKind::Error => (Color::Red, " Error · Esc dismiss "),
+        MessageKind::Success => (Color::LightGreen, " Done · Esc dismiss "),
+    };
+    let width = (message.text.chars().count() as u16 + 6).clamp(24, bounds.width.max(1));
+    let height = 3.min(bounds.height);
+    let area = ratatui::layout::Rect::new(
+        bounds.x.saturating_add(bounds.width.saturating_sub(width)),
+        bounds
+            .y
+            .saturating_add(bounds.height.saturating_sub(height)),
+        width,
+        height,
+    );
     frame.render_widget(Clear, area);
     frame.render_widget(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .title(" Layout presets "),
+        Paragraph::new(message.text.as_str())
+            .style(Style::default().fg(color))
+            .wrap(Wrap { trim: true })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(color))
+                    .title(title),
+            ),
         area,
     );
+}
+
+fn render_toolbar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, geo: &mut Geometry) {
+    let preset_mode = app.preset_picker.is_some();
+    let actions: Vec<(UiAction, String, u16, bool)> = if preset_mode {
+        let has_selection = app.current_preset_count() > 0;
+        let mut actions = vec![(UiAction::PresetPreview, "Preview".into(), 11, has_selection)];
+        if app.preset_picker.as_ref().unwrap().page == PresetPage::Saved {
+            actions.extend([
+                (UiAction::PresetRename, "Rename".into(), 10, has_selection),
+                (UiAction::PresetDelete, "Delete".into(), 10, has_selection),
+            ]);
+        }
+        actions.push((UiAction::Help, "?".into(), 5, true));
+        actions
+    } else {
+        let draft_selected = is_draft_pane(&app.selected);
+        vec![
+            (UiAction::Balance, "Balance".into(), 11, true),
+            (UiAction::Undo, "Undo".into(), 8, true),
+            (UiAction::Save, "Save".into(), 8, true),
+            (UiAction::DeleteDraft, "Delete".into(), 10, draft_selected),
+            (UiAction::Apply, "Apply".into(), 9, true),
+            (UiAction::Cancel, "Cancel".into(), 10, true),
+            (UiAction::Help, "?".into(), 5, true),
+        ]
+    };
+    let mut items = vec![
+        (Some(UiAction::ModeEditor), "Editor".to_string(), 12, true),
+        (Some(UiAction::ModePresets), "Presets".to_string(), 12, true),
+        (None, String::new(), 2, true),
+    ];
+    items.extend(
+        actions
+            .into_iter()
+            .map(|(action, label, width, enabled)| (Some(action), label, width, enabled)),
+    );
+    let constraints = items
+        .iter()
+        .map(|(_, _, width, _)| Constraint::Length(*width))
+        .collect::<Vec<_>>();
+    let cells = Layout::horizontal(constraints).split(area);
+    for ((action, label, _, enabled), rect) in items.into_iter().zip(cells.iter().copied()) {
+        let Some(action) = action else {
+            frame.render_widget(
+                Paragraph::new(label)
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(Color::DarkGray)),
+                rect,
+            );
+            continue;
+        };
+        let tab = matches!(action, UiAction::ModeEditor | UiAction::ModePresets);
+        let active = match action {
+            UiAction::ModeEditor => !preset_mode,
+            UiAction::ModePresets => preset_mode,
+            _ => false,
+        };
+        let text_color = if !enabled {
+            Color::DarkGray
+        } else if active {
+            Color::Cyan
+        } else if matches!(action, UiAction::Apply) {
+            Color::LightGreen
+        } else if matches!(action, UiAction::Cancel) {
+            Color::LightRed
+        } else {
+            Color::Gray
+        };
+        if tab {
+            let border_color = if active { Color::Cyan } else { Color::Gray };
+            frame.render_widget(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(if active {
+                        BorderType::Thick
+                    } else {
+                        BorderType::Plain
+                    })
+                    .border_style(Style::default().fg(border_color)),
+                rect,
+            );
+            let inner = rect.inner(Margin {
+                horizontal: 1,
+                vertical: 1,
+            });
+            frame.render_widget(
+                Paragraph::new(label)
+                    .alignment(Alignment::Center)
+                    .style(if active {
+                        Style::default().fg(Color::Cyan).bold()
+                    } else {
+                        Style::default().fg(text_color)
+                    }),
+                inner,
+            );
+        } else {
+            let border_color = if !enabled {
+                Color::DarkGray
+            } else if matches!(action, UiAction::Apply) {
+                Color::LightGreen
+            } else if matches!(action, UiAction::Cancel) {
+                Color::LightRed
+            } else {
+                Color::Gray
+            };
+            frame.render_widget(
+                Paragraph::new(label)
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(text_color))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(border_color)),
+                    ),
+                rect,
+            );
+        }
+        if enabled {
+            geo.action_zones.push(ActionZone {
+                action,
+                rect: from_ratatui(rect),
+            });
+        }
+    }
+}
+
+fn render_preset_picker(
+    frame: &mut Frame,
+    app: &App,
+    geometry: &mut Geometry,
+    bounds: ratatui::layout::Rect,
+) {
+    let picker = app.preset_picker.as_ref().unwrap();
+    let area = bounds;
+    frame.render_widget(Clear, area);
     let inner = area.inner(Margin {
         horizontal: 1,
-        vertical: 1,
+        vertical: 0,
     });
-    let rows = Layout::vertical([
-        Constraint::Min(16),
-        Constraint::Length(2),
-        Constraint::Length(2),
-        Constraint::Length(2),
-    ])
-    .split(inner);
+    let rows = Layout::vertical([Constraint::Length(3), Constraint::Min(16)]).split(inner);
+
+    let collection = centered_rect(42, 100, rows[0]);
+    let collection_cells =
+        Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).split(collection);
+    for (page, action, label, rect) in [
+        (
+            PresetPage::BuiltIn,
+            UiAction::PresetBuiltIn,
+            "Built-in",
+            collection_cells[0],
+        ),
+        (
+            PresetPage::Saved,
+            UiAction::PresetSaved,
+            "Saved",
+            collection_cells[1],
+        ),
+    ] {
+        let active = picker.page == page;
+        let text_color = if active { Color::Cyan } else { Color::Gray };
+        frame.render_widget(
+            Paragraph::new(label)
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(text_color).add_modifier(if active {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Gray)),
+                ),
+            rect,
+        );
+        geometry.action_zones.push(ActionZone {
+            action,
+            rect: from_ratatui(rect),
+        });
+    }
 
     let card_rows = Layout::vertical([
         Constraint::Ratio(1, 3),
+        Constraint::Length(1),
         Constraint::Ratio(1, 3),
+        Constraint::Length(1),
         Constraint::Ratio(1, 3),
     ])
-    .split(rows[0]);
-    for (index, preset) in PresetKind::ALL.iter().copied().enumerate() {
+    .split(rows[1]);
+    let card_count = app.current_preset_count();
+    for index in 0..card_count {
         let row = index / 3;
         let column = index % 3;
         let columns = Layout::horizontal([
             Constraint::Ratio(1, 3),
+            Constraint::Length(2),
             Constraint::Ratio(1, 3),
+            Constraint::Length(2),
             Constraint::Ratio(1, 3),
         ])
-        .split(card_rows[row]);
-        let card = columns[column];
+        .split(card_rows[row * 2]);
+        let card = columns[column * 2];
         geometry.preset_cards.push(PresetCardZone {
             index,
             rect: Rect {
@@ -129,7 +311,29 @@ fn render_preset_picker(frame: &mut Frame, app: &App, geometry: &mut Geometry) {
                 height: card.height,
             },
         });
-        let enabled = app.preset_enabled(preset, picker.destination);
+        let (title, tree, enabled, anchor_slot) = match picker.page {
+            PresetPage::BuiltIn => {
+                let preset = PresetKind::ALL[index];
+                let ids = (1..=preset.slots())
+                    .map(|slot| slot.to_string())
+                    .collect::<Vec<_>>();
+                (
+                    preset.title().to_string(),
+                    preset.build(&ids).ok(),
+                    app.preset_enabled(preset),
+                    None,
+                )
+            }
+            PresetPage::Saved => {
+                let layout = &app.saved_catalog.layouts[index];
+                (
+                    layout.name.clone(),
+                    layout.tree.preview_tree().ok(),
+                    app.saved_preset_enabled(layout),
+                    Some(layout.anchor_slot),
+                )
+            }
+        };
         let selected = index == picker.selected;
         let color = if !enabled {
             Color::DarkGray
@@ -142,19 +346,19 @@ fn render_preset_picker(frame: &mut Frame, app: &App, geometry: &mut Geometry) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(color))
-                .title(format!(" {} · {} slots ", preset.title(), preset.slots())),
+                .title(format!(" {title} ")),
             card,
         );
-        if card.width > 6 && card.height > 3 {
+        if let Some(tree) = tree.filter(|_| card.width > 6 && card.height > 3) {
             let preview = card.inner(Margin {
                 horizontal: 2,
                 vertical: 1,
             });
-            let preview = preset_preview_rect(preview, preset);
-            let ids = (1..=preset.slots())
-                .map(|slot| slot.to_string())
-                .collect::<Vec<_>>();
-            let tree = preset.build(&ids).unwrap();
+            let preview = if let PresetPage::BuiltIn = picker.page {
+                preset_preview_rect(preview, PresetKind::ALL[index])
+            } else {
+                preview
+            };
             let mini = Geometry::calculate(
                 &tree,
                 Rect {
@@ -165,73 +369,141 @@ fn render_preset_picker(frame: &mut Frame, app: &App, geometry: &mut Geometry) {
                 },
             );
             for pane in mini.panes {
+                let is_anchor = anchor_slot.is_some_and(|slot| pane.pane_id == slot.to_string());
                 frame.render_widget(
                     Block::default()
                         .borders(Borders::ALL)
-                        .border_style(Style::default().fg(color))
-                        .title(pane.pane_id),
+                        .border_style(Style::default().fg(if is_anchor && enabled {
+                            Color::LightGreen
+                        } else {
+                            color
+                        }))
+                        .title(if is_anchor {
+                            format!("{}*", pane.pane_id)
+                        } else {
+                            pane.pane_id
+                        }),
                     to_ratatui(pane.rect),
                 );
             }
         }
     }
 
-    let destination = match picker.destination {
-        PresetDestination::CurrentTab => "[ Current tab ]   New workspace",
-        PresetDestination::NewWorkspace => "  Current tab   [ New workspace ]",
-    };
-    let destination_style = match picker.destination {
-        PresetDestination::CurrentTab => Color::Cyan,
-        PresetDestination::NewWorkspace => Color::LightGreen,
+    if card_count == 0 {
+        frame.render_widget(
+            Paragraph::new("No saved layouts yet\n\nOpen Editor, then click Save")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::DarkGray)),
+            rows[1],
+        );
+    }
+}
+
+fn render_name_prompt(frame: &mut Frame, app: &App, geometry: &mut Geometry) {
+    let prompt = app.name_prompt.as_ref().unwrap();
+    let area = centered_fixed(58, 9, frame.area());
+    frame.render_widget(Clear, area);
+    let (title, confirm) = match prompt.kind {
+        NamePromptKind::Save => (" Save custom layout ", "Save"),
+        NamePromptKind::Rename { .. } => (" Rename custom layout ", "Rename"),
     };
     frame.render_widget(
-        Paragraph::new(destination)
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(destination_style).bold()),
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightGreen))
+            .title(title),
+        area,
+    );
+    let rows = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Length(3),
+    ])
+    .split(area.inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    }));
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from("Name"),
+            Line::from(format!("> {}_", prompt.value)),
+        ]),
+        rows[0],
+    );
+    frame.render_widget(
+        Paragraph::new("Geometry only · Enter/Esc also work")
+            .style(Style::default().fg(Color::DarkGray)),
         rows[1],
     );
-    geometry.preset_destination = Some(from_ratatui(rows[1]));
+    render_dialog_buttons(frame, geometry, rows[2], confirm, Color::LightGreen);
+}
 
-    let preset = PresetKind::ALL[picker.selected];
-    let enabled = app.preset_enabled(preset, picker.destination);
-    let detail = match picker.destination {
-        PresetDestination::CurrentTab => {
-            let count = app.preset_source_count();
-            if enabled {
-                format!(
-                    "Enter Preview · {} existing panes · creates {} shells",
-                    count,
-                    preset.slots().saturating_sub(count)
-                )
-            } else {
-                format!(
-                    "Unavailable · {} panes cannot fit in {} slots",
-                    count,
-                    preset.slots()
-                )
-            }
-        }
-        PresetDestination::NewWorkspace => {
-            format!(
-                "Enter Preview · creates a new workspace with {} shells",
-                preset.slots()
-            )
-        }
-    };
+fn render_delete_confirm(frame: &mut Frame, app: &App, geometry: &mut Geometry) {
+    let index = app.delete_confirm.unwrap();
+    let name = app
+        .saved_catalog
+        .layouts
+        .get(index)
+        .map(|layout| layout.name.as_str())
+        .unwrap_or("this layout");
+    let area = centered_fixed(56, 7, frame.area());
+    frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(detail)
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(if enabled { Color::White } else { Color::Red })),
-        rows[2],
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Red))
+            .title(" Delete saved layout "),
+        area,
     );
-    geometry.preset_apply = Some(from_ratatui(rows[2]));
+    let rows = Layout::vertical([Constraint::Length(2), Constraint::Length(3)]).split(area.inner(
+        Margin {
+            horizontal: 2,
+            vertical: 1,
+        },
+    ));
+    frame.render_widget(
+        Paragraph::new(format!("Delete '{name}'?"))
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::White)),
+        rows[0],
+    );
+    render_dialog_buttons(frame, geometry, rows[1], "Delete", Color::Red);
+}
 
-    frame.render_widget(
-        Paragraph::new("arrows/hjkl Move · Tab Destination · Enter Preview · Esc Close")
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(Color::Gray)),
-        rows[3],
-    );
+fn render_dialog_buttons(
+    frame: &mut Frame,
+    geometry: &mut Geometry,
+    area: ratatui::layout::Rect,
+    confirm: &str,
+    confirm_color: Color,
+) {
+    let buttons = centered_rect(64, 100, area);
+    let cells = Layout::horizontal([
+        Constraint::Ratio(1, 2),
+        Constraint::Length(2),
+        Constraint::Ratio(1, 2),
+    ])
+    .split(buttons);
+    for (action, label, color, rect) in [
+        (UiAction::DialogConfirm, confirm, confirm_color, cells[0]),
+        (UiAction::DialogCancel, "Cancel", Color::Gray, cells[2]),
+    ] {
+        frame.render_widget(
+            Paragraph::new(label)
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(color))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(color)),
+                ),
+            rect,
+        );
+        geometry.action_zones.push(ActionZone {
+            action,
+            rect: from_ratatui(rect),
+        });
+    }
 }
 
 fn preset_preview_rect(rect: ratatui::layout::Rect, preset: PresetKind) -> ratatui::layout::Rect {
@@ -277,16 +549,10 @@ fn render_pane(frame: &mut Frame, app: &App, pane: &PaneRect) {
     let moving = app.carrying.as_ref() == Some(&pane.pane_id)
         || app.dragging.as_ref() == Some(&pane.pane_id);
     let border_color = if draft {
-        if app.add_mode && app.add_target.as_ref() == Some(&pane.pane_id) {
+        if selected {
             Color::LightGreen
         } else {
             Color::Green
-        }
-    } else if app.add_mode {
-        if app.add_target.as_ref() == Some(&pane.pane_id) {
-            Color::LightCyan
-        } else {
-            Color::Cyan
         }
     } else if moving {
         Color::Yellow
@@ -500,60 +766,71 @@ fn footer(app: &App) -> String {
     } else {
         ""
     };
+    if app.preset_picker.is_some() {
+        return "Enter: Preview · /: Switch Built-in ↔ Saved · Esc: Back · ?: Help".into();
+    }
     if app.dragging.is_some() {
         return format!("Drop on center to swap · Drop on edge to split{modified}");
-    }
-    if app.add_mode {
-        return format!(
-            "ADD PANE · Click pane → + · d Delete draft · Enter Done · Esc Cancel preview{modified}"
-        );
-    }
-    if app.pending_new_workspace {
-        return "NEW WORKSPACE · p Change preset · Enter Create · u Back · Esc Cancel".into();
     }
     if app.carrying.is_some() {
         return format!("Arrows choose target · Space Drop · Esc Release · ? Help{modified}");
     }
-    format!(
-        "Drag to arrange · n Add pane · p Presets · = Balance · Enter Apply · Esc Cancel · ? Help{modified}"
-    )
+    format!("Drag to arrange · Click + to add · ? Help{modified}")
 }
 
-fn render_help(frame: &mut Frame) {
+fn render_help(frame: &mut Frame, app: &App) {
     let area = centered_rect(64, 72, frame.area());
     frame.render_widget(Clear, area);
-    let text = vec![
-        Line::styled("Mouse", Style::default().fg(Color::Cyan).bold()),
-        Line::from("  Drag to center     Swap panes"),
-        Line::from("  Drag to edge       Re-parent pane"),
-        Line::from("  Drag divider       Resize split"),
-        Line::from(""),
-        Line::styled("Keyboard", Style::default().fg(Color::Cyan).bold()),
-        Line::from("  n                  Add pane mode"),
-        Line::from("  p                  Layout presets"),
-        Line::from("  Arrows / h j k l   Select spatially"),
-        Line::from("  Space              Pick up / drop"),
-        Line::from("  [ / ]              Resize selected split"),
-        Line::from("  =                  Balance all splits 50/50"),
-        Line::from("  u / r              Undo / reset preview"),
-        Line::from("  Enter              Apply preview"),
-        Line::from("  Esc                Cancel or dismiss"),
-        Line::from(""),
-        Line::styled(
-            "Add pane mode",
-            Style::default().fg(Color::LightGreen).bold(),
-        ),
-        Line::from("  Click pane, then + Add a draft shell"),
-        Line::from("  d                  Remove selected draft"),
-        Line::from("  Enter              Keep drafts and exit mode"),
-        Line::from("  Esc                Discard preview and exit mode"),
-    ];
+    let preset_mode = app.preset_picker.is_some();
+    let text = if preset_mode {
+        vec![
+            Line::styled("Mouse", Style::default().fg(Color::Cyan).bold()),
+            Line::from("  Built-in / Saved   Switch layout source"),
+            Line::from("  Layout card        Select a layout"),
+            Line::from("  Preview            Return it to Editor as a preview"),
+            Line::from("  Rename / Delete    Manage the selected saved layout"),
+            Line::from(""),
+            Line::styled("Keyboard", Style::default().fg(Color::Cyan).bold()),
+            Line::from("  /                  Switch Built-in / Saved"),
+            Line::from("  Arrows / h j k l   Select a layout"),
+            Line::from("  Enter              Preview selected layout"),
+            Line::from("  r / d              Rename / delete a saved layout"),
+            Line::from("  Esc                Return to Editor"),
+            Line::from("  ?                  Close this help"),
+        ]
+    } else {
+        vec![
+            Line::styled("Mouse", Style::default().fg(Color::Cyan).bold()),
+            Line::from("  Selected pane +    Add a draft shell on that edge"),
+            Line::from("  Drag to center     Swap panes"),
+            Line::from("  Drag to edge       Re-parent pane"),
+            Line::from("  Drag divider       Resize split"),
+            Line::from(""),
+            Line::styled("Keyboard", Style::default().fg(Color::Cyan).bold()),
+            Line::from("  p                  Open layout presets"),
+            Line::from("  s                  Save preview as a custom layout"),
+            Line::from("  Arrows / h j k l   Select spatially"),
+            Line::from("  Space              Pick up / drop"),
+            Line::from("  [ / ]              Resize selected split"),
+            Line::from("  =                  Balance all splits 50/50"),
+            Line::from("  u / r              Undo / reset preview"),
+            Line::from("  d                  Remove selected draft"),
+            Line::from("  Enter              Apply preview"),
+            Line::from("  Esc                Cancel editor"),
+            Line::from("  ?                  Close this help"),
+        ]
+    };
+    let title = if preset_mode {
+        " Presets help · ? or Esc to close "
+    } else {
+        " Editor help · ? or Esc to close "
+    };
     frame.render_widget(
         Paragraph::new(text).block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Cyan))
-                .title(" Help · ? or Esc to close "),
+                .title(title),
         ),
         area,
     );
@@ -576,6 +853,17 @@ fn centered_rect(
         Constraint::Percentage((100 - percent_x) / 2),
     ])
     .split(vertical[1])[1]
+}
+
+fn centered_fixed(width: u16, height: u16, area: ratatui::layout::Rect) -> ratatui::layout::Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    ratatui::layout::Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    )
 }
 
 fn secondary_label(agent: Option<&str>, process: Option<&str>, status: Option<&str>) -> String {
@@ -726,7 +1014,160 @@ mod tests {
 
         let geometry = geometry.unwrap();
         assert_eq!(geometry.preset_cards.len(), PresetKind::ALL.len());
-        assert!(geometry.preset_destination.is_some());
-        assert!(geometry.preset_apply.is_some());
+        assert_eq!(geometry.action_zones.len(), 6);
+        for action in [UiAction::PresetPreview, UiAction::PresetBuiltIn] {
+            let zone = geometry
+                .action_zones
+                .iter()
+                .find(|zone| zone.action == action)
+                .unwrap();
+            assert_eq!(
+                terminal
+                    .backend()
+                    .buffer()
+                    .cell((zone.rect.x, zone.rect.y))
+                    .unwrap()
+                    .fg,
+                Color::Gray
+            );
+        }
+    }
+
+    #[test]
+    fn mode_tabs_are_equal_sized_and_highlight_without_background_fill() {
+        let app = App::new(Snapshot {
+            workspace_id: "w".into(),
+            tab_id: "t".into(),
+            focused_pane_id: "p1".into(),
+            tree: LayoutNode::Pane {
+                pane_id: "p1".into(),
+            },
+            metadata: HashMap::new(),
+            revisions: HashMap::new(),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| drop(draw(frame, &app))).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((0, 0)).unwrap().symbol(), "┏");
+        assert_eq!(buffer.cell((11, 0)).unwrap().symbol(), "┓");
+        assert_eq!(buffer.cell((12, 0)).unwrap().symbol(), "┌");
+        assert_eq!(buffer.cell((23, 0)).unwrap().symbol(), "┐");
+        assert_eq!(buffer.cell((0, 0)).unwrap().fg, Color::Cyan);
+        assert_eq!(buffer.cell((12, 0)).unwrap().fg, Color::Gray);
+        for x in 1..11 {
+            assert_ne!(buffer.cell((x, 1)).unwrap().bg, Color::Cyan);
+        }
+    }
+
+    #[test]
+    fn delete_action_is_available_only_for_a_selected_draft() {
+        let mut app = App::new(Snapshot {
+            workspace_id: "w".into(),
+            tab_id: "t".into(),
+            focused_pane_id: "p1".into(),
+            tree: LayoutNode::Pane {
+                pane_id: "p1".into(),
+            },
+            metadata: HashMap::new(),
+            revisions: HashMap::new(),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut geometry = None;
+        terminal
+            .draw(|frame| geometry = Some(draw(frame, &app)))
+            .unwrap();
+        assert!(!geometry
+            .as_ref()
+            .unwrap()
+            .action_zones
+            .iter()
+            .any(|zone| { zone.action == UiAction::DeleteDraft }));
+
+        app.add_draft("p1", Edge::Right);
+        terminal
+            .draw(|frame| geometry = Some(draw(frame, &app)))
+            .unwrap();
+        let geometry = geometry.unwrap();
+        let delete = geometry
+            .action_zones
+            .iter()
+            .find(|zone| zone.action == UiAction::DeleteDraft)
+            .unwrap();
+        assert_eq!(
+            terminal
+                .backend()
+                .buffer()
+                .cell((delete.rect.x, delete.rect.y))
+                .unwrap()
+                .fg,
+            Color::Gray
+        );
+    }
+
+    #[test]
+    fn empty_saved_gallery_and_name_prompt_render_safely() {
+        let mut app = App::new(Snapshot {
+            workspace_id: "w".into(),
+            tab_id: "t".into(),
+            focused_pane_id: "p1".into(),
+            tree: LayoutNode::Pane {
+                pane_id: "p1".into(),
+            },
+            metadata: HashMap::new(),
+            revisions: HashMap::new(),
+        });
+        app.open_preset_picker();
+        app.toggle_preset_collection();
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal
+            .draw(|frame| {
+                let geometry = draw(frame, &app);
+                assert!(geometry.preset_cards.is_empty());
+            })
+            .unwrap();
+
+        app.close_preset_picker();
+        app.open_save_prompt();
+        let mut prompt_geometry = None;
+        terminal
+            .draw(|frame| {
+                prompt_geometry = Some(draw(frame, &app));
+            })
+            .unwrap();
+        let prompt_geometry = prompt_geometry.unwrap();
+        assert!(prompt_geometry
+            .action_zones
+            .iter()
+            .any(|zone| zone.action == UiAction::DialogConfirm));
+        assert!(prompt_geometry
+            .action_zones
+            .iter()
+            .any(|zone| zone.action == UiAction::DialogCancel));
+    }
+
+    #[test]
+    fn success_toast_does_not_resize_the_editor_canvas() {
+        let mut app = App::new(Snapshot {
+            workspace_id: "w".into(),
+            tab_id: "t".into(),
+            focused_pane_id: "p1".into(),
+            tree: LayoutNode::Pane {
+                pane_id: "p1".into(),
+            },
+            metadata: HashMap::new(),
+            revisions: HashMap::new(),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut without_message = None;
+        terminal
+            .draw(|frame| without_message = Some(draw(frame, &app)))
+            .unwrap();
+        app.set_success("Custom layout saved");
+        let mut with_message = None;
+        terminal
+            .draw(|frame| with_message = Some(draw(frame, &app)))
+            .unwrap();
+        assert_eq!(without_message.unwrap().panes, with_message.unwrap().panes);
     }
 }

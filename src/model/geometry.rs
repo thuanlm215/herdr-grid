@@ -30,14 +30,37 @@ pub struct PresetCardZone {
     pub index: usize,
     pub rect: Rect,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UiAction {
+    ModeEditor,
+    ModePresets,
+    Balance,
+    Undo,
+    DeleteDraft,
+    Save,
+    Apply,
+    Cancel,
+    Help,
+    PresetBuiltIn,
+    PresetSaved,
+    PresetPreview,
+    PresetRename,
+    PresetDelete,
+    DialogConfirm,
+    DialogCancel,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActionZone {
+    pub action: UiAction,
+    pub rect: Rect,
+}
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Geometry {
     pub panes: Vec<PaneRect>,
     pub dividers: Vec<Divider>,
     pub add_zones: Vec<AddZone>,
     pub preset_cards: Vec<PresetCardZone>,
-    pub preset_destination: Option<Rect>,
-    pub preset_apply: Option<Rect>,
+    pub action_zones: Vec<ActionZone>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Hit {
@@ -191,12 +214,12 @@ impl Geometry {
             .find(|zone| inside(zone.rect, x, y))
             .map(|zone| zone.index)
     }
-    pub fn hit_preset_destination(&self, x: u16, y: u16) -> bool {
-        self.preset_destination
-            .is_some_and(|rect| inside(rect, x, y))
-    }
-    pub fn hit_preset_apply(&self, x: u16, y: u16) -> bool {
-        self.preset_apply.is_some_and(|rect| inside(rect, x, y))
+    pub fn hit_action(&self, x: u16, y: u16) -> Option<UiAction> {
+        self.action_zones
+            .iter()
+            .rev()
+            .find(|zone| inside(zone.rect, x, y))
+            .map(|zone| zone.action)
     }
 }
 fn inside(r: Rect, x: u16, y: u16) -> bool {

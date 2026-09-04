@@ -50,15 +50,6 @@ pub trait HerdrClient: Send + Sync {
     async fn close_pane(&self, _pane: &str) -> anyhow::Result<()> {
         anyhow::bail!("pane cleanup is not implemented by this client")
     }
-    async fn create_workspace(&self, _cwd: &str, _label: &str) -> anyhow::Result<WorkspaceOutcome> {
-        anyhow::bail!("workspace creation is not implemented by this client")
-    }
-    async fn close_workspace(&self, _workspace: &str) -> anyhow::Result<()> {
-        anyhow::bail!("workspace cleanup is not implemented by this client")
-    }
-    async fn focus_workspace(&self, _workspace: &str) -> anyhow::Result<()> {
-        anyhow::bail!("workspace focus is not implemented by this client")
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -73,13 +64,6 @@ pub struct MoveOutcome {
 pub struct SplitOutcome {
     pub pane_id: String,
     pub target_tree: LayoutNode,
-}
-
-#[derive(Clone, Debug)]
-pub struct WorkspaceOutcome {
-    pub workspace_id: String,
-    pub tab_id: String,
-    pub pane_id: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -357,50 +341,5 @@ impl HerdrClient for CliClient {
     }
     async fn close_pane(&self, pane: &str) -> anyhow::Result<()> {
         Self::run(&["pane", "close", pane]).await.map(|_| ())
-    }
-    async fn create_workspace(&self, cwd: &str, label: &str) -> anyhow::Result<WorkspaceOutcome> {
-        let result = Self::socket_request(
-            "workspace.create",
-            serde_json::json!({
-                "cwd": cwd,
-                "label": label,
-                "focus": false
-            }),
-        )
-        .await?;
-        let workspace_id = result
-            .pointer("/workspace/workspace_id")
-            .or_else(|| result.get("workspace_id"))
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| anyhow::anyhow!("workspace.create response lacks workspace id"))?
-            .to_owned();
-        let pane = result
-            .get("root_pane")
-            .ok_or_else(|| anyhow::anyhow!("workspace.create response lacks root pane"))?;
-        let pane_id = pane
-            .get("pane_id")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| anyhow::anyhow!("workspace.create root pane lacks pane id"))?
-            .to_owned();
-        let tab_id = pane
-            .get("tab_id")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| anyhow::anyhow!("workspace.create root pane lacks tab id"))?
-            .to_owned();
-        Ok(WorkspaceOutcome {
-            workspace_id,
-            tab_id,
-            pane_id,
-        })
-    }
-    async fn close_workspace(&self, workspace: &str) -> anyhow::Result<()> {
-        Self::run(&["workspace", "close", workspace])
-            .await
-            .map(|_| ())
-    }
-    async fn focus_workspace(&self, workspace: &str) -> anyhow::Result<()> {
-        Self::run(&["workspace", "focus", workspace])
-            .await
-            .map(|_| ())
     }
 }

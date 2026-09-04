@@ -5,8 +5,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A visual layout editor for live [Herdr](https://herdr.dev/) panes. Drag to
-rearrange, resize splits, add shells, and apply fixed presets without
-restarting agents or losing pane state.
+rearrange, resize splits, add shells, and reuse built-in or saved layouts
+without restarting agents or losing pane state.
 
 [![herdr-grid demo: rearrange panes, apply a preset, and add shells](docs/images/herdr-grid-demo.gif)](docs/images/herdr-grid-demo.webm)
 
@@ -33,16 +33,22 @@ after installation.
 
 ### Add shell panes
 
-Draft panes are highlighted in green and are created only when the completed
-preview is applied.
+Click a pane to reveal four edge controls, then click `+` to place a draft
+shell. Draft panes are highlighted in green and are created only when the
+completed preview is applied.
 
-![Add pane mode showing a green draft pane and edge controls](docs/images/add-pane-mode.png)
+![A green draft pane with edge controls](docs/images/add-pane-mode.png)
 
 ### Layout presets
 
 Press `p` to open a visual gallery of fixed layouts, including 2×2 and 3×3
 grids and asymmetric main-pane layouts. Apply the preset to the current tab or
-use it to create a fresh workspace.
+save your own geometry for reuse later.
+
+Press `s` from the editor to save the current preview as a reusable custom
+layout. The selected pane becomes its anchor: when the layout is reused, the
+currently selected pane takes that position. Press `/` in the gallery to
+toggle between built-in and saved layouts.
 
 ![Layout preset gallery with nine fixed pane arrangements](docs/images/layout-presets.png)
 
@@ -53,7 +59,8 @@ use it to create a fresh workspace.
 - Drag split dividers to resize panes.
 - Preview one or more new shell panes and create them together on Apply.
 - Choose a fixed layout preset; missing slots become new shell panes.
-- Build a preset in the current tab or in a newly created workspace.
+- Save, rename, delete, and reuse custom layout geometry across workspaces.
+- Use mouse-first Editor and Presets tabs with contextual action buttons.
 - Balance every split in the preview to 50/50 with one key.
 - Rearrange and resize the layout with keyboard controls.
 - Undo or reset changes before they reach Herdr.
@@ -104,16 +111,18 @@ herdr config check && herdr server reload-config
 
 | Input | Action |
 | --- | --- |
+| Click `Editor` / `Presets` | Switch between direct editing and layout selection |
+| Click toolbar actions | Run actions available for the active mode |
 | Drag pane to center | Swap two panes |
 | Drag pane to edge | Re-parent pane at that edge |
 | Drag divider | Resize a split |
 | Click pane | Select pane |
-| `n` | Enter Add pane mode |
 | `p` | Open the fixed layout preset gallery |
+| `s` | Save the current preview as a custom layout |
+| `/` in the preset gallery | Toggle between built-in and saved layouts |
+| `r` / `d` on a saved layout | Rename / delete the saved layout |
 | Click pane, then edge `+` | Add a draft shell at that edge |
-| `d` in Add pane mode | Remove the selected draft pane |
-| `Enter` in Add pane mode | Keep drafts in the preview and return to normal mode |
-| `Esc` in Add pane mode | Discard the complete preview and return to normal mode |
+| `d` with a draft selected | Remove the selected draft pane |
 | Arrow keys or `h/j/k/l` | Move selection |
 | `Space` | Pick up or drop selected pane |
 | `[` / `]` | Resize selected split |
@@ -129,6 +138,13 @@ For a read-only connectivity check from inside a Herdr-managed pane:
 ```sh
 target/release/herdr-grid --inspect
 ```
+
+Custom layouts are stored globally in
+`$HERDR_PLUGIN_CONFIG_DIR/custom-layouts.json`. They contain only split
+directions, ratios, numbered slots, and the anchor slot—never pane IDs,
+commands, working directories, or terminal metadata. Saving records the
+preview but does not apply it. Up to nine custom layouts can be saved, matching
+the gallery's single 3×3 page.
 
 ## Safety model
 
@@ -152,11 +168,6 @@ fails after creating a requested shell, it may close only that newly created
 pane while restoring the original layout. It never calls `layout.apply` or
 `tab.close`. See [Architecture](docs/architecture.md) for details and remaining
 failure modes.
-
-For a new-workspace preset, Apply creates an isolated workspace first and
-constructs its split tree from Herdr's returned pane IDs. If construction or
-verification fails, the plugin closes only that newly created workspace. The
-source workspace is never rearranged.
 
 ## Development
 
