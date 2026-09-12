@@ -5,8 +5,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A visual layout editor for live [Herdr](https://herdr.dev/) panes. Drag to
-rearrange, resize splits, add shells, and reuse built-in or saved layouts
-without restarting agents or losing pane state.
+rearrange, resize splits, add shells, send panes to another tab or workspace,
+and reuse built-in or saved layouts without restarting agents or losing pane
+state.
 
 [![herdr-grid demo: rearrange panes, apply a preset, and add shells](docs/images/herdr-grid-demo.gif)](docs/images/herdr-grid-demo.webm)
 
@@ -56,6 +57,8 @@ toggle between built-in and saved layouts.
 
 - Drag a pane onto another pane to swap their positions.
 - Drop on an edge to create a new horizontal or vertical relationship.
+- Drag a pane onto a tab, workspace, `+ Tab`, or `+ Workspace` chip to send it
+  there on Apply. Hover another workspace while dragging to see its tabs.
 - Drag split dividers to resize panes.
 - Preview one or more new shell panes and create them together on Apply.
 - Choose a fixed layout preset; missing slots become new shell panes.
@@ -115,6 +118,8 @@ herdr config check && herdr server reload-config
 | Click toolbar actions | Run actions available for the active mode |
 | Drag pane to center | Swap two panes |
 | Drag pane to edge | Re-parent pane at that edge |
+| Drag pane onto a tab or workspace | Send that pane there on Apply |
+| `Tab` / `Shift+Tab` while carrying | Highlight a destination chip |
 | Drag divider | Resize a split |
 | Click pane | Select pane |
 | `p` | Open the fixed layout preset gallery |
@@ -165,9 +170,11 @@ removed automatically by Herdr.
 
 The plugin never closes a pane that existed when the editor opened. If Apply
 fails after creating a requested shell, it may close only that newly created
-pane while restoring the original layout. It never calls `layout.apply` or
-`tab.close`. See [Architecture](docs/architecture.md) for details and remaining
-failure modes.
+pane while restoring the original layout. Sending the last live pane of a tab
+lets Herdr close that empty tab; if Apply then fails, moved panes are returned
+to the original tab or, if that tab is gone, to a new tab in the same
+workspace. The plugin never calls `layout.apply` or `tab.close`. See
+[Architecture](docs/architecture.md) for details and remaining failure modes.
 
 ## Development
 

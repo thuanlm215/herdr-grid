@@ -27,6 +27,7 @@ pub enum Edge {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum LayoutNode {
+    Empty,
     Pane {
         pane_id: PaneId,
     },
@@ -58,6 +59,7 @@ impl LayoutNode {
     pub fn validate(&self) -> Result<(), ModelError> {
         fn visit(n: &LayoutNode, ids: &mut HashSet<String>) -> Result<(), ModelError> {
             match n {
+                LayoutNode::Empty => Ok(()),
                 LayoutNode::Pane { pane_id } => {
                     if ids.insert(pane_id.clone()) {
                         Ok(())
@@ -89,6 +91,7 @@ impl LayoutNode {
     }
     fn walk(&self, f: &mut impl FnMut(&PaneId)) {
         match self {
+            Self::Empty => {}
             Self::Pane { pane_id } => f(pane_id),
             Self::Split { first, second, .. } => {
                 first.walk(f);
@@ -98,6 +101,7 @@ impl LayoutNode {
     }
     fn replace_id(&mut self, from: &str, to: String) -> bool {
         match self {
+            Self::Empty => false,
             Self::Pane { pane_id } if pane_id == from => {
                 *pane_id = to;
                 true
@@ -135,7 +139,7 @@ impl LayoutNode {
     }
     fn take(&mut self, id: &str) -> Option<LayoutNode> {
         match self {
-            Self::Pane { .. } => None,
+            Self::Empty | Self::Pane { .. } => None,
             Self::Split { first, second, .. } => {
                 if matches!(&**first, Self::Pane{pane_id} if pane_id==id) {
                     let keep = (**second).clone();
@@ -154,10 +158,21 @@ impl LayoutNode {
         }
     }
     pub fn detach_pane(&mut self, id: &str) -> Result<LayoutNode, ModelError> {
+        if let Self::Pane { pane_id } = self {
+            if pane_id == id {
+                let taken = self.clone();
+                *self = Self::Empty;
+                return Ok(taken);
+            }
+        }
         self.take(id).ok_or_else(|| ModelError::NotFound(id.into()))
+    }
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Self::Empty)
     }
     fn target_mut(&mut self, id: &str) -> Option<&mut LayoutNode> {
         match self {
+            Self::Empty => None,
             Self::Pane { pane_id } if pane_id == id => Some(self),
             Self::Pane { .. } => None,
             Self::Split { first, second, .. } => {
@@ -232,18 +247,18 @@ impl LayoutNode {
                         first
                     }
                 }
-                Self::Pane { .. } => return None,
+                Self::Empty | Self::Pane { .. } => return None,
             };
         }
         match node {
             Self::Split { ratio, .. } => Some(*ratio),
-            Self::Pane { .. } => None,
+            Self::Empty | Self::Pane { .. } => None,
         }
     }
     pub fn balance_splits(&mut self) -> bool {
         fn visit(node: &mut LayoutNode) -> bool {
             match node {
-                LayoutNode::Pane { .. } => false,
+                LayoutNode::Empty | LayoutNode::Pane { .. } => false,
                 LayoutNode::Split {
                     ratio,
                     first,
@@ -389,6 +404,17 @@ mod tests {
         assert_eq!(t.ratio_at(&[]), Some(0.5));
         assert_eq!(t.ratio_at(&[true]), Some(0.5));
         assert!(!t.balance_splits());
+        t.validate().unwrap();
+    }
+
+    #[test]
+    fn detaching_the_last_pane_leaves_an_empty_tree() {
+        let mut t = LayoutNode::Pane {
+            pane_id: "a".into(),
+        };
+        t.detach_pane("a").unwrap();
+        assert!(t.is_empty());
+        assert!(t.pane_ids().is_empty());
         t.validate().unwrap();
     }
 }

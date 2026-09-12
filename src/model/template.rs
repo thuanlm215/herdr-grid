@@ -56,6 +56,7 @@ impl TemplateNode {
 
         fn convert(node: &LayoutNode, slots: &HashMap<PaneId, u16>) -> TemplateNode {
             match node {
+                LayoutNode::Empty => TemplateNode::Slot { slot: 0 },
                 LayoutNode::Pane { pane_id } => TemplateNode::Slot {
                     slot: slots[pane_id],
                 },

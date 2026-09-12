@@ -65,6 +65,11 @@ pane to that anchor, maps the remaining panes in visual order, and fills empty
 slots with drafts. A layout with fewer slots than existing panes is rejected;
 saved layouts never imply deletion.
 
+Cross-tab and cross-workspace sends are stored as preview rehomes, not as
+live `pane.move` calls. Apply relocates those panes first, then runs the
+normal planner on whatever remains in the source tab. An empty remaining
+tree means the source tab will close after the last pane leaves.
+
 The global custom-layout catalog is a bounded, versioned JSON document under
 `HERDR_PLUGIN_CONFIG_DIR`. It contains geometry and display names only. Loads
 validate schema version, names, tree depth, ratios, slot uniqueness, and
@@ -91,13 +96,20 @@ issuing writes and reports the last authoritative pane and tab IDs available.
 
 ## Explicit non-goals
 
+Sending a pane to another tab or workspace is a preview edit until Apply.
+Apply first relocates those panes with `pane.move` (`focus: false`), then
+applies the remaining source-tab layout. The last live pane of a tab may leave;
+Herdr then closes the empty source tab. The plugin never calls `tab.close`.
+
+If relocation fails after some panes have already left, recovery tries
+`pane.move` back to the original tab. If that tab no longer exists, recovery
+creates a new tab in the original workspace and moves the panes there.
+
 The transaction engine never:
 
 - calls `layout.apply`, because it replaces live PTYs;
 - closes a pane that existed before Apply or sends input to its process;
-- closes a scratch tab directly;
-- edits more than one source tab;
-- moves panes between workspaces.
+- closes a scratch tab or user tab directly;
 - deletes existing panes to make them fit a preset.
 
 ## Remaining limitations

@@ -1,7 +1,7 @@
 id = "herdr-grid"
 name = "herdr-grid"
-version = "0.4.0"
-description = "Visual pane layout editor with drag-and-drop, new shells, and reusable layouts"
+version = "0.5.0"
+description = "Visual pane layout editor with drag-and-drop, new shells, reusable layouts, and sending panes across tabs"
 min_herdr_version = "0.8.2"
 platforms = ["linux", "macos"]
 

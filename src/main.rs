@@ -106,11 +106,12 @@ async fn run(
                 Action::Continue => {}
                 Action::Cancel => break Ok(()),
                 Action::Apply => {
-                    if app.preview == app.snapshot.tree {
+                    if !app.is_modified() {
                         break Ok(());
                     }
                     let snapshot = app.snapshot.clone();
                     let target = app.preview.clone();
+                    let rehomes = app.rehomes.clone();
                     let mut render_error = None;
                     let mut report_progress = |progress| {
                         app.progress = Some(progress);
@@ -124,7 +125,7 @@ async fn run(
                         client,
                         snapshot: &snapshot,
                     }
-                    .apply_with_progress(&target, &mut report_progress)
+                    .apply_with_progress(&target, &rehomes, &mut report_progress)
                     .await;
                     if let Some(error) = render_error {
                         break Err(anyhow::anyhow!("render apply progress: {error}"));

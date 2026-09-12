@@ -1,8 +1,8 @@
 use crate::{
-    herdr::{ApplyProgress, HerdrClient, Snapshot, Transaction},
+    herdr::{ApplyProgress, HerdrClient, SessionTab, SessionWorkspace, Snapshot, Transaction},
     model::{
-        is_draft_pane, Edge, Geometry, LayoutNode, PaneId, PresetKind, Rect, SplitPath,
-        TemplateNode, DRAFT_PANE_PREFIX,
+        is_draft_pane, DestChip, DestId, Edge, Geometry, LayoutNode, PaneId, PresetKind, Rect,
+        Rehome, RehomeDest, SplitPath, TemplateNode, DRAFT_PANE_PREFIX,
     },
     saved::{CatalogError, SavedCatalog, SavedLayout, MAX_LAYOUT_NAME_CHARS, MAX_SAVED_LAYOUTS},
 };
@@ -51,10 +51,20 @@ pub struct NamePrompt {
     pub value: String,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct UndoFrame {
+    preview: LayoutNode,
+    rehomes: Vec<Rehome>,
+}
+
 pub struct App {
     pub snapshot: Snapshot,
     pub preview: LayoutNode,
-    pub undo: Vec<LayoutNode>,
+    pub rehomes: Vec<Rehome>,
+    pub dest_hover: Option<DestId>,
+    pub dest_cursor: Option<DestId>,
+    pub expanded_workspace: Option<String>,
+    pub undo: Vec<UndoFrame>,
     pub selected: PaneId,
     pub carrying: Option<PaneId>,
     pub drop_edge: Option<Edge>,
@@ -82,6 +92,10 @@ impl App {
         Self {
             snapshot,
             preview,
+            rehomes: vec![],
+            dest_hover: None,
+            dest_cursor: None,
+            expanded_workspace: None,
             undo: vec![],
             selected,
             carrying: None,
@@ -100,18 +114,33 @@ impl App {
             catalog_backup: None,
         }
     }
+    fn checkpoint(&self) -> UndoFrame {
+        UndoFrame {
+            preview: self.preview.clone(),
+            rehomes: self.rehomes.clone(),
+        }
+    }
     fn edit(&mut self, f: impl FnOnce(&mut LayoutNode) -> Result<(), crate::model::ModelError>) {
-        let old = self.preview.clone();
+        let old = self.checkpoint();
         match f(&mut self.preview) {
             Ok(()) => self.undo.push(old),
             Err(e) => self.set_error(e),
         }
     }
+    pub fn is_modified(&self) -> bool {
+        self.preview != self.snapshot.tree || !self.rehomes.is_empty()
+    }
+    pub fn moving_pane(&self) -> Option<&PaneId> {
+        self.dragging.as_ref().or(self.carrying.as_ref())
+    }
+    pub fn highlighted_dest(&self) -> Option<DestId> {
+        self.dest_hover.clone().or_else(|| self.dest_cursor.clone())
+    }
     pub fn set_error(&mut self, error: impl ToString) {
         self.message = Some(AppMessage {
             kind: MessageKind::Error,
             text: error.to_string(),
-            expires_at: None,
+            expires_at: Some(Instant::now() + Duration::from_secs(3)),
         });
     }
     pub fn set_success(&mut self, message: impl Into<String>) {
@@ -138,20 +167,22 @@ impl App {
         self.edit(|t| t.reparent(a, b, e))
     }
     pub fn undo(&mut self) {
-        if let Some(t) = self.undo.pop() {
-            self.preview = t;
+        if let Some(frame) = self.undo.pop() {
+            self.preview = frame.preview;
+            self.rehomes = frame.rehomes;
             self.repair_selection();
         }
     }
     pub fn reset(&mut self) {
-        if self.preview != self.snapshot.tree {
-            self.undo.push(self.preview.clone());
-            self.preview = self.snapshot.tree.clone()
+        if self.is_modified() {
+            self.undo.push(self.checkpoint());
+            self.preview = self.snapshot.tree.clone();
+            self.rehomes.clear();
         }
         self.repair_selection();
     }
     pub fn balance_splits(&mut self) {
-        let old = self.preview.clone();
+        let old = self.checkpoint();
         if self.preview.balance_splits() {
             self.undo.push(old);
         }
@@ -170,7 +201,7 @@ impl App {
                         first
                     }
                 }
-                LayoutNode::Pane { .. } => return,
+                LayoutNode::Empty | LayoutNode::Pane { .. } => return,
             };
         }
         let LayoutNode::Split { ratio, .. } = node else {
@@ -388,7 +419,10 @@ impl App {
                     id
                 })?;
         self.next_draft = next_draft;
-        self.undo.push(source);
+        self.undo.push(UndoFrame {
+            preview: source,
+            rehomes: self.rehomes.clone(),
+        });
         self.preview = target;
         self.selected = selected;
         self.repair_selection();
@@ -515,7 +549,10 @@ impl App {
             ids.push(self.fresh_draft_id());
         }
         let target = preset.build(&ids)?;
-        self.undo.push(source);
+        self.undo.push(UndoFrame {
+            preview: source,
+            rehomes: self.rehomes.clone(),
+        });
         self.preview = target;
         self.selected = source_selected;
         self.repair_selection();
@@ -528,7 +565,7 @@ impl App {
     }
     pub fn add_draft(&mut self, target: &str, edge: Edge) {
         let id = self.fresh_draft_id();
-        let old = self.preview.clone();
+        let old = self.checkpoint();
         match self.preview.insert_at_edge(target, id.clone(), edge, 0.5) {
             Ok(_) => {
                 self.undo.push(old);
@@ -543,7 +580,7 @@ impl App {
             return;
         }
         let selected = self.selected.clone();
-        let old = self.preview.clone();
+        let old = self.checkpoint();
         match self.preview.detach_pane(&selected) {
             Ok(_) => {
                 self.undo.push(old);
@@ -568,7 +605,362 @@ impl App {
             client: c,
             snapshot: &self.snapshot,
         }
-        .apply(&self.preview)
+        .apply_preview(&self.preview, &self.rehomes)
         .await
     }
+
+    pub fn dest_chips(&self) -> Vec<DestChip> {
+        let mut chips = self.workspace_chips();
+        chips.extend(self.tab_chips());
+        chips
+    }
+
+    pub fn workspace_chips(&self) -> Vec<DestChip> {
+        let current_ws = &self.snapshot.workspace_id;
+        let mut workspaces = self.snapshot.workspaces.clone();
+        if !workspaces
+            .iter()
+            .any(|workspace| workspace.workspace_id == *current_ws)
+        {
+            workspaces.insert(
+                0,
+                SessionWorkspace {
+                    workspace_id: current_ws.clone(),
+                    label: current_ws.clone(),
+                    active_tab_id: Some(self.snapshot.tab_id.clone()),
+                },
+            );
+        }
+        workspaces.sort_by_key(|workspace| workspace.workspace_id != *current_ws);
+        let mut chips: Vec<_> = workspaces
+            .iter()
+            .map(|workspace| self.workspace_chip(workspace, workspace.workspace_id == *current_ws))
+            .collect();
+        chips.push(self.action_chip(DestId::NewWorkspace, "+ Workspace"));
+        chips
+    }
+
+    pub fn tab_chips(&self) -> Vec<DestChip> {
+        let workspace_id = self.expanded_workspace_id();
+        let mut tabs: Vec<&SessionTab> = self
+            .snapshot
+            .tabs
+            .iter()
+            .filter(|tab| tab.workspace_id == workspace_id)
+            .collect();
+        tabs.sort_by_key(|tab| tab.number);
+        let mut chips = if tabs.is_empty() && workspace_id == self.snapshot.workspace_id {
+            vec![self.tab_chip(&self.snapshot.tab_id, "this", true, false)]
+        } else {
+            tabs.into_iter()
+                .map(|tab| {
+                    self.tab_chip(
+                        &tab.tab_id,
+                        &tab_label(tab),
+                        tab.tab_id == self.snapshot.tab_id,
+                        tab.zoomed,
+                    )
+                })
+                .collect()
+        };
+        chips.push(self.action_chip(
+            DestId::NewTab {
+                workspace_id: workspace_id.clone(),
+            },
+            "+ Tab",
+        ));
+        chips
+    }
+
+    pub fn expanded_workspace_id(&self) -> String {
+        self.expanded_workspace
+            .clone()
+            .unwrap_or_else(|| self.snapshot.workspace_id.clone())
+    }
+
+    pub fn set_dest_hover(&mut self, dest: Option<DestId>) {
+        self.dest_hover = dest.clone();
+        if self.moving_pane().is_none() {
+            if dest.is_none() {
+                self.expanded_workspace = None;
+            }
+            return;
+        }
+        match dest {
+            Some(DestId::Workspace(id)) => self.expanded_workspace = Some(id),
+            Some(DestId::Tab(tab_id)) => {
+                if let Some(workspace_id) = self.workspace_id_for_tab(&tab_id) {
+                    self.expanded_workspace = Some(workspace_id);
+                }
+            }
+            Some(DestId::NewTab { .. }) | Some(DestId::NewWorkspace) | None => {}
+        }
+    }
+
+    fn workspace_id_for_tab(&self, tab_id: &str) -> Option<String> {
+        self.snapshot
+            .tabs
+            .iter()
+            .find(|tab| tab.tab_id == tab_id)
+            .map(|tab| tab.workspace_id.clone())
+    }
+
+    fn tab_chip(&self, tab_id: &str, label: &str, current: bool, zoomed: bool) -> DestChip {
+        let id = DestId::Tab(tab_id.to_owned());
+        let (enabled, reason) = if current {
+            (false, Some("Already on this tab".into()))
+        } else if zoomed {
+            (false, Some("Unzoom that tab first".into()))
+        } else {
+            (true, None)
+        };
+        DestChip {
+            badge: self.badge_for(&id),
+            label: if current {
+                format!("{label}*")
+            } else {
+                label.into()
+            },
+            id,
+            enabled,
+            current,
+            reason,
+        }
+    }
+
+    fn workspace_chip(&self, workspace: &SessionWorkspace, current: bool) -> DestChip {
+        let id = DestId::Workspace(workspace.workspace_id.clone());
+        let zoomed = workspace
+            .active_tab_id
+            .as_ref()
+            .and_then(|tab_id| {
+                self.snapshot
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.tab_id == *tab_id)
+                    .map(|tab| tab.zoomed)
+            })
+            .unwrap_or(false);
+        let (enabled, reason) = if current {
+            (false, Some("Already on this workspace".into()))
+        } else if zoomed {
+            (false, Some("Unzoom that tab first".into()))
+        } else {
+            (true, None)
+        };
+        let name = if workspace.label.is_empty() {
+            workspace.workspace_id.clone()
+        } else {
+            workspace.label.clone()
+        };
+        DestChip {
+            badge: self.badge_for(&id),
+            id,
+            label: name,
+            enabled,
+            current,
+            reason,
+        }
+    }
+
+    fn action_chip(&self, id: DestId, label: &str) -> DestChip {
+        DestChip {
+            badge: self.badge_for(&id),
+            id,
+            label: label.into(),
+            enabled: true,
+            current: false,
+            reason: None,
+        }
+    }
+
+    fn badge_for(&self, id: &DestId) -> Option<String> {
+        let panes: Vec<_> = self
+            .rehomes
+            .iter()
+            .filter(|rehome| rehome.dest.matches_chip(id))
+            .map(|rehome| short_pane_id(&rehome.pane_id))
+            .collect();
+        match panes.len() {
+            0 => None,
+            1 => Some(format!("+{}", panes[0])),
+            n => Some(format!("+{n}")),
+        }
+    }
+
+    pub fn cycle_dest(&mut self, delta: isize) {
+        let chips: Vec<_> = self
+            .dest_chips()
+            .into_iter()
+            .filter(|chip| chip.enabled)
+            .map(|chip| chip.id)
+            .collect();
+        if chips.is_empty() {
+            self.dest_cursor = None;
+            return;
+        }
+        let current = self.highlighted_dest();
+        let index = current
+            .and_then(|id| chips.iter().position(|chip| *chip == id))
+            .map(|index| (index as isize + delta).rem_euclid(chips.len() as isize) as usize)
+            .unwrap_or(if delta >= 0 { 0 } else { chips.len() - 1 });
+        self.dest_cursor = Some(chips[index].clone());
+        self.dest_hover = None;
+        match &chips[index] {
+            DestId::Workspace(id) => self.expanded_workspace = Some(id.clone()),
+            DestId::Tab(tab_id) => {
+                if let Some(workspace_id) = self.workspace_id_for_tab(tab_id) {
+                    self.expanded_workspace = Some(workspace_id);
+                }
+            }
+            DestId::NewTab { .. } => {}
+            DestId::NewWorkspace => self.expanded_workspace = None,
+        }
+    }
+
+    pub fn drop_on_highlighted_dest(&mut self) {
+        let Some(pane) = self.moving_pane().cloned() else {
+            return;
+        };
+        let Some(dest) = self.highlighted_dest() else {
+            return;
+        };
+        self.rehome(&pane, dest);
+    }
+
+    pub fn rehome(&mut self, pane: &str, dest: DestId) {
+        if let Err(error) = self.can_rehome(pane) {
+            self.set_error(error);
+            self.clear_move_state();
+            return;
+        }
+        let chips = self.dest_chips();
+        let Some(chip) = chips.iter().find(|chip| chip.id == dest) else {
+            self.clear_move_state();
+            return;
+        };
+        if !chip.enabled {
+            self.set_error(
+                chip.reason
+                    .clone()
+                    .unwrap_or_else(|| "Can't send a pane there".into()),
+            );
+            self.clear_move_state();
+            return;
+        }
+        let resolved = match self.resolve_dest(&dest) {
+            Ok(dest) => dest,
+            Err(error) => {
+                self.set_error(error);
+                self.clear_move_state();
+                return;
+            }
+        };
+        let old = self.checkpoint();
+        match self.preview.detach_pane(pane) {
+            Ok(_) => {
+                self.undo.push(old);
+                self.rehomes.push(Rehome {
+                    pane_id: pane.into(),
+                    dest: resolved,
+                });
+                self.clear_move_state();
+                self.repair_selection();
+            }
+            Err(error) => {
+                self.set_error(error);
+                self.clear_move_state();
+            }
+        }
+    }
+
+    fn can_rehome(&self, pane: &str) -> Result<(), String> {
+        if is_draft_pane(pane) {
+            return Err("Drafts stay here until Apply".into());
+        }
+        if !self.preview.pane_ids().iter().any(|id| id == pane) {
+            return Err("That pane is not in this tab".into());
+        }
+        let leftover_drafts = self
+            .preview
+            .pane_ids()
+            .into_iter()
+            .filter(|id| is_draft_pane(id))
+            .count();
+        let live = self
+            .preview
+            .pane_ids()
+            .into_iter()
+            .filter(|id| !is_draft_pane(id) && id != pane)
+            .count();
+        if live == 0 && leftover_drafts > 0 {
+            return Err("Can't empty this tab while new shells are waiting".into());
+        }
+        Ok(())
+    }
+
+    fn resolve_dest(&self, dest: &DestId) -> Result<RehomeDest, String> {
+        match dest {
+            DestId::Tab(tab_id) => {
+                let label = self
+                    .snapshot
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.tab_id == *tab_id)
+                    .map(tab_label)
+                    .unwrap_or_else(|| tab_id.clone());
+                Ok(RehomeDest::Tab {
+                    tab_id: tab_id.clone(),
+                    label,
+                })
+            }
+            DestId::NewTab { workspace_id } => Ok(RehomeDest::NewTab {
+                workspace_id: workspace_id.clone(),
+            }),
+            DestId::NewWorkspace => Ok(RehomeDest::NewWorkspace),
+            DestId::Workspace(workspace_id) => {
+                let workspace = self
+                    .snapshot
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.workspace_id == *workspace_id);
+                if let Some(tab_id) =
+                    workspace.and_then(|workspace| workspace.active_tab_id.as_ref())
+                {
+                    if tab_id != &self.snapshot.tab_id {
+                        return self.resolve_dest(&DestId::Tab(tab_id.clone()));
+                    }
+                }
+                Ok(RehomeDest::NewTab {
+                    workspace_id: workspace_id.clone(),
+                })
+            }
+        }
+    }
+
+    fn clear_move_state(&mut self) {
+        self.carrying = None;
+        self.dragging = None;
+        self.drop_edge = None;
+        self.drop_preview = None;
+        self.dest_hover = None;
+        self.dest_cursor = None;
+        self.expanded_workspace = None;
+    }
+}
+
+fn tab_label(tab: &SessionTab) -> String {
+    if tab.label.is_empty() {
+        tab.tab_id
+            .rsplit(':')
+            .next()
+            .unwrap_or(&tab.tab_id)
+            .to_owned()
+    } else {
+        tab.label.clone()
+    }
+}
+
+fn short_pane_id(id: &str) -> &str {
+    id.rsplit(':').next().unwrap_or(id)
 }

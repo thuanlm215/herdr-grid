@@ -1,9 +1,9 @@
 [package]
 name = "herdr-grid"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
-description = "Safe visual layout editor for Herdr panes"
+description = "Safe visual layout editor for Herdr panes, including sending panes across tabs"
 readme = "README.md"
 repository = "https://github.com/thuanlm215/herdr-grid"
 homepage = "https://github.com/thuanlm215/herdr-grid"

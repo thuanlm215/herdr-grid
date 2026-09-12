@@ -85,6 +85,7 @@ pub fn rebuild_plan(target: &LayoutNode, anchor: &str) -> anyhow::Result<Vec<Ope
 }
 fn relabel(node: &LayoutNode, ids: &[PaneId], index: &mut usize) -> LayoutNode {
     match node {
+        LayoutNode::Empty => LayoutNode::Empty,
         LayoutNode::Pane { .. } => {
             let pane_id = ids[*index].clone();
             *index += 1;
@@ -110,6 +111,7 @@ pub fn rebuild_moves(target: &LayoutNode) -> Vec<Operation> {
 }
 fn same_shape(a: &LayoutNode, b: &LayoutNode) -> bool {
     match (a, b) {
+        (LayoutNode::Empty, LayoutNode::Empty) => true,
         (LayoutNode::Pane { .. }, LayoutNode::Pane { .. }) => true,
         (
             LayoutNode::Split {
@@ -160,6 +162,7 @@ fn collect_ratios(a: &LayoutNode, b: &LayoutNode, path: &mut SplitPath, out: &mu
 }
 fn emit_build(n: &LayoutNode, _anchor: &str, out: &mut Vec<Operation>) -> Option<PaneId> {
     match n {
+        LayoutNode::Empty => None,
         LayoutNode::Pane { pane_id } => Some(pane_id.clone()),
         LayoutNode::Split {
             direction,

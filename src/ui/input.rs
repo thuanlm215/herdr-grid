@@ -115,6 +115,9 @@ pub fn key(app: &mut App, k: KeyEvent) -> Action {
             app.carrying = None;
             app.drop_edge = None;
             app.drop_preview = None;
+            app.dest_cursor = None;
+            app.dest_hover = None;
+            app.expanded_workspace = None;
             Action::Continue
         }
         KeyCode::Esc | KeyCode::Char('q') => Action::Cancel,
@@ -152,7 +155,23 @@ pub fn key(app: &mut App, k: KeyEvent) -> Action {
             Action::Continue
         }
         KeyCode::Char(' ') => {
-            app.toggle_carry();
+            if app.carrying.is_some() && app.highlighted_dest().is_some() {
+                app.drop_on_highlighted_dest();
+            } else {
+                app.toggle_carry();
+            }
+            Action::Continue
+        }
+        KeyCode::Tab => {
+            if app.carrying.is_some() || app.dragging.is_some() {
+                app.cycle_dest(1);
+            }
+            Action::Continue
+        }
+        KeyCode::BackTab => {
+            if app.carrying.is_some() || app.dragging.is_some() {
+                app.cycle_dest(-1);
+            }
             Action::Continue
         }
         KeyCode::Left | KeyCode::Char('h') => nav(app, -1, Some(Edge::Left)),
@@ -252,7 +271,13 @@ pub fn mouse(app: &mut App, m: MouseEvent, g: &Geometry, drag: &mut Option<DragS
             }
             Some(DragState::Pane(source)) => {
                 app.dragging = Some(source.clone());
-                app.drop_preview = drop_preview(g.hit(m.column, m.row), &source);
+                if let Some(dest) = g.hit_dest(m.column, m.row) {
+                    app.set_dest_hover(Some(dest));
+                    app.drop_preview = None;
+                } else {
+                    app.set_dest_hover(None);
+                    app.drop_preview = drop_preview(g.hit(m.column, m.row), &source);
+                }
             }
             Some(DragState::AddButton(zone)) => {
                 let source = zone.pane_id;
@@ -271,17 +296,26 @@ pub fn mouse(app: &mut App, m: MouseEvent, g: &Geometry, drag: &mut Option<DragS
                 }
             }
             Some(DragState::Pane(src)) => {
-                let target = app
-                    .drop_preview
-                    .take()
-                    .or_else(|| drop_preview(g.hit(m.column, m.row), &src));
-                if let Some(target) = target {
-                    match target.edge {
-                        Some(edge) => app.reparent(&src, &target.pane_id, edge),
-                        None => app.swap(&src, &target.pane_id),
+                let dest = app
+                    .dest_hover
+                    .clone()
+                    .or_else(|| g.hit_dest(m.column, m.row));
+                if let Some(dest) = dest {
+                    app.rehome(&src, dest);
+                } else {
+                    let target = app
+                        .drop_preview
+                        .take()
+                        .or_else(|| drop_preview(g.hit(m.column, m.row), &src));
+                    if let Some(target) = target {
+                        match target.edge {
+                            Some(edge) => app.reparent(&src, &target.pane_id, edge),
+                            None => app.swap(&src, &target.pane_id),
+                        }
                     }
+                    app.dragging = None;
+                    app.set_dest_hover(None);
                 }
-                app.dragging = None;
             }
             Some(DragState::Divider(_)) | None => {}
         },
@@ -359,8 +393,8 @@ fn drop_preview(hit: Option<Hit>, source: &str) -> Option<DropPreview> {
 mod tests {
     use super::*;
     use crate::{
-        herdr::Snapshot,
-        model::{ActionZone, AddZone, Direction, LayoutNode, Rect, UiAction},
+        herdr::{SessionTab, SessionWorkspace, Snapshot},
+        model::{ActionZone, AddZone, DestChipZone, DestId, Direction, LayoutNode, Rect, UiAction},
     };
     use std::collections::HashMap;
 
@@ -389,7 +423,41 @@ mod tests {
             tree,
             metadata: HashMap::new(),
             revisions: HashMap::new(),
+            ..Default::default()
         })
+    }
+
+    fn rehome_app() -> App {
+        let mut app = app();
+        app.snapshot.workspaces = vec![SessionWorkspace {
+            workspace_id: "w".into(),
+            label: "herdr-grid".into(),
+            active_tab_id: Some("t".into()),
+        }];
+        app.snapshot.tabs = vec![
+            SessionTab {
+                tab_id: "t".into(),
+                workspace_id: "w".into(),
+                label: "main".into(),
+                number: 1,
+                zoomed: false,
+            },
+            SessionTab {
+                tab_id: "t2".into(),
+                workspace_id: "w".into(),
+                label: "logs".into(),
+                number: 2,
+                zoomed: false,
+            },
+            SessionTab {
+                tab_id: "t3".into(),
+                workspace_id: "w".into(),
+                label: "zoom".into(),
+                number: 3,
+                zoomed: true,
+            },
+        ];
+        app
     }
 
     #[test]
@@ -429,6 +497,7 @@ mod tests {
             tree,
             metadata: HashMap::new(),
             revisions: HashMap::new(),
+            ..Default::default()
         });
 
         app.move_selection_spatial(Edge::Right);
@@ -908,5 +977,171 @@ mod tests {
         );
         assert!(app.name_prompt.is_none());
         assert_eq!(app.saved_catalog.layouts[0].name, "Mouse layout");
+    }
+
+    #[test]
+    fn rehome_removes_the_pane_from_preview_until_apply() {
+        let mut app = rehome_app();
+        app.rehome("b", DestId::Tab("t2".into()));
+        assert_eq!(app.preview.pane_ids(), ["a"]);
+        assert_eq!(app.rehomes.len(), 1);
+        assert!(app.is_modified());
+        app.undo();
+        assert_eq!(app.preview.pane_ids(), ["a", "b"]);
+        assert!(app.rehomes.is_empty());
+    }
+
+    #[test]
+    fn rehome_allows_the_last_live_pane_but_rejects_zoomed_tabs() {
+        let mut app = rehome_app();
+        app.rehome("b", DestId::Tab("t2".into()));
+        app.rehome("a", DestId::Tab("t2".into()));
+        assert!(app.preview.is_empty());
+        assert_eq!(app.rehomes.len(), 2);
+
+        let mut app = rehome_app();
+        app.rehome("b", DestId::Tab("t3".into()));
+        assert_eq!(app.preview.pane_ids(), ["a", "b"]);
+        assert!(app.rehomes.is_empty());
+    }
+
+    #[test]
+    fn tab_then_space_sends_the_carried_pane() {
+        let mut app = rehome_app();
+        app.toggle_carry();
+        for _ in 0..8 {
+            press(&mut app, KeyCode::Tab);
+            if app.highlighted_dest() == Some(DestId::Tab("t2".into())) {
+                break;
+            }
+        }
+        assert_eq!(app.highlighted_dest(), Some(DestId::Tab("t2".into())));
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.preview.pane_ids(), ["b"]);
+        assert_eq!(app.rehomes[0].pane_id, "a");
+        assert!(app.carrying.is_none());
+    }
+
+    #[test]
+    fn dragging_over_a_workspace_reveals_its_tabs() {
+        let mut app = rehome_app();
+        app.snapshot.workspaces.push(SessionWorkspace {
+            workspace_id: "w2".into(),
+            label: "english-devops".into(),
+            active_tab_id: Some("t4".into()),
+        });
+        app.snapshot.tabs.push(SessionTab {
+            tab_id: "t4".into(),
+            workspace_id: "w2".into(),
+            label: "review".into(),
+            number: 1,
+            zoomed: false,
+        });
+        app.dragging = Some("a".into());
+        assert!(app
+            .tab_chips()
+            .iter()
+            .any(|chip| chip.id == DestId::Tab("t2".into())));
+        app.set_dest_hover(Some(DestId::Workspace("w2".into())));
+        let tabs: Vec<_> = app.tab_chips().into_iter().map(|chip| chip.id).collect();
+        assert!(tabs.contains(&DestId::Tab("t4".into())));
+        assert!(!tabs.contains(&DestId::Tab("t2".into())));
+        app.set_dest_hover(None);
+        let tabs: Vec<_> = app.tab_chips().into_iter().map(|chip| chip.id).collect();
+        assert!(
+            tabs.contains(&DestId::Tab("t4".into())),
+            "leaving a chip during drag must keep the expanded workspace"
+        );
+        app.set_dest_hover(Some(DestId::Tab("t4".into())));
+        assert_eq!(app.expanded_workspace.as_deref(), Some("w2"));
+        assert!(app
+            .workspace_chips()
+            .iter()
+            .any(|chip| chip.current && chip.label == "herdr-grid"));
+    }
+
+    #[test]
+    fn new_tab_badge_stays_on_the_destination_workspace() {
+        let mut app = rehome_app();
+        app.snapshot.workspaces.push(SessionWorkspace {
+            workspace_id: "w2".into(),
+            label: "english-devops".into(),
+            active_tab_id: Some("t4".into()),
+        });
+        app.dragging = Some("b".into());
+        app.set_dest_hover(Some(DestId::Workspace("w2".into())));
+        app.rehome(
+            "b",
+            DestId::NewTab {
+                workspace_id: "w2".into(),
+            },
+        );
+        let current_plus = app
+            .tab_chips()
+            .into_iter()
+            .find(|chip| matches!(chip.id, DestId::NewTab { .. }))
+            .unwrap();
+        assert_eq!(current_plus.badge, None);
+        app.expanded_workspace = Some("w2".into());
+        let dest_plus = app
+            .tab_chips()
+            .into_iter()
+            .find(|chip| matches!(chip.id, DestId::NewTab { .. }))
+            .unwrap();
+        assert_eq!(dest_plus.badge.as_deref(), Some("+b"));
+        assert!(app
+            .workspace_chips()
+            .iter()
+            .any(|chip| chip.label == "english-devops" && chip.badge.as_deref() == Some("+b")));
+    }
+
+    #[test]
+    fn dropping_a_tile_on_a_dest_chip_rehomes_it() {
+        let mut app = rehome_app();
+        let mut geometry = Geometry::calculate(
+            &app.preview,
+            Rect {
+                x: 0,
+                y: 2,
+                width: 40,
+                height: 20,
+            },
+        );
+        geometry.dest_zones.push(DestChipZone {
+            dest: DestId::Tab("t2".into()),
+            rect: Rect {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 1,
+            },
+        });
+        let event = |kind, column, row| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        let mut drag = None;
+        mouse(
+            &mut app,
+            event(MouseEventKind::Down(MouseButton::Left), 5, 10),
+            &geometry,
+            &mut drag,
+        );
+        mouse(
+            &mut app,
+            event(MouseEventKind::Drag(MouseButton::Left), 3, 0),
+            &geometry,
+            &mut drag,
+        );
+        mouse(
+            &mut app,
+            event(MouseEventKind::Up(MouseButton::Left), 3, 0),
+            &geometry,
+            &mut drag,
+        );
+        assert_eq!(app.preview.pane_ids(), ["b"]);
+        assert_eq!(app.rehomes[0].pane_id, "a");
     }
 }

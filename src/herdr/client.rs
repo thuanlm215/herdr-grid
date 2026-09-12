@@ -1,5 +1,8 @@
-use super::{tree_from_layout, LayoutEnvelope, PaneListEnvelope, ProcessEnvelope, Snapshot};
-use crate::model::{Direction, LayoutNode, SplitPath};
+use super::{
+    tree_from_layout, LayoutEnvelope, PaneListEnvelope, ProcessEnvelope, SessionTab,
+    SessionWorkspace, Snapshot,
+};
+use crate::model::{Direction, LayoutNode, RehomeDest, SplitPath};
 use async_trait::async_trait;
 use std::time::Duration;
 use std::{collections::HashMap, process::Stdio};
@@ -50,6 +53,9 @@ pub trait HerdrClient: Send + Sync {
     async fn close_pane(&self, _pane: &str) -> anyhow::Result<()> {
         anyhow::bail!("pane cleanup is not implemented by this client")
     }
+    async fn relocate_pane(&self, _pane: &str, _dest: &RehomeDest) -> anyhow::Result<MoveOutcome> {
+        anyhow::bail!("pane relocation is not implemented by this client")
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -77,8 +83,8 @@ impl CliClient {
                 "plugin_id": plugin_id,
                 "entrypoint": "grid",
                 "placement": "popup",
-                "width": "85%",
-                "height": "85%",
+                "width": "90%",
+                "height": "90%",
                 "focus": true
             }),
         )
@@ -206,6 +212,103 @@ impl CliClient {
         let raw = Self::run(&["pane", "layout", "--pane", pane]).await?;
         Ok(serde_json::from_str::<LayoutEnvelope>(&raw)?.result.layout)
     }
+
+    async fn session_destinations(
+        current_workspace: &str,
+        current_tab: &str,
+    ) -> (Vec<SessionWorkspace>, Vec<SessionTab>) {
+        let Ok(raw) = Self::run(&["api", "snapshot"]).await else {
+            return (Vec::new(), Vec::new());
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            return (Vec::new(), Vec::new());
+        };
+        let snapshot = value
+            .get("result")
+            .and_then(|result| result.get("snapshot"))
+            .cloned()
+            .unwrap_or(value);
+        parse_session_destinations(&snapshot, current_workspace, current_tab)
+    }
+}
+
+fn parse_session_destinations(
+    snapshot: &serde_json::Value,
+    current_workspace: &str,
+    current_tab: &str,
+) -> (Vec<SessionWorkspace>, Vec<SessionTab>) {
+    let zoomed: HashMap<String, bool> = snapshot
+        .get("layouts")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|layout| {
+            Some((
+                layout.get("tab_id")?.as_str()?.to_owned(),
+                layout.get("zoomed").and_then(|value| value.as_bool())?,
+            ))
+        })
+        .collect();
+    let workspaces = snapshot
+        .get("workspaces")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|workspace| {
+            Some(SessionWorkspace {
+                workspace_id: workspace.get("workspace_id")?.as_str()?.to_owned(),
+                label: workspace
+                    .get("label")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .to_owned(),
+                active_tab_id: workspace
+                    .get("active_tab_id")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut tabs = snapshot
+        .get("tabs")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|tab| {
+            let tab_id = tab.get("tab_id")?.as_str()?.to_owned();
+            Some(SessionTab {
+                zoomed: zoomed.get(&tab_id).copied().unwrap_or(false),
+                workspace_id: tab
+                    .get("workspace_id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or(current_workspace)
+                    .to_owned(),
+                label: tab
+                    .get("label")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .to_owned(),
+                number: tab
+                    .get("number")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0) as u32,
+                tab_id,
+            })
+        })
+        .collect::<Vec<_>>();
+    if !tabs.iter().any(|tab| tab.tab_id == current_tab) {
+        tabs.insert(
+            0,
+            SessionTab {
+                tab_id: current_tab.into(),
+                workspace_id: current_workspace.into(),
+                label: "this".into(),
+                number: 0,
+                zoomed: false,
+            },
+        );
+    }
+    (workspaces, tabs)
 }
 #[async_trait]
 impl HerdrClient for CliClient {
@@ -232,12 +335,13 @@ impl HerdrClient for CliClient {
         for (pane_id, meta) in &mut metadata {
             if let Ok(raw) = Self::run(&["pane", "process-info", "--pane", pane_id]).await {
                 if let Ok(process) = serde_json::from_str::<ProcessEnvelope>(&raw) {
-                    meta.process_name = process
-                        .result
-                        .process_info
-                        .foreground_processes
-                        .first()
-                        .map(|p| p.name.clone());
+                    if let Some(foreground) =
+                        process.result.process_info.foreground_processes.first()
+                    {
+                        meta.process_name = Some(foreground.name.clone());
+                        meta.process_argv = foreground.argv.clone();
+                        meta.process_cmdline = foreground.cmdline.clone();
+                    }
                 }
             }
         }
@@ -246,6 +350,7 @@ impl HerdrClient for CliClient {
             .map(|(id, m)| (id.clone(), m.revision))
             .collect();
         let tree = tree_from_layout(&layout)?;
+        let (workspaces, tabs) = Self::session_destinations(&workspace, &tab).await;
         Ok(Snapshot {
             workspace_id: workspace,
             tab_id: tab,
@@ -253,6 +358,8 @@ impl HerdrClient for CliClient {
             tree,
             metadata,
             revisions,
+            workspaces,
+            tabs,
         })
     }
     async fn layout_for(&self, pane: &str) -> anyhow::Result<LayoutNode> {
@@ -341,5 +448,35 @@ impl HerdrClient for CliClient {
     }
     async fn close_pane(&self, pane: &str) -> anyhow::Result<()> {
         Self::run(&["pane", "close", pane]).await.map(|_| ())
+    }
+    async fn relocate_pane(&self, pane: &str, dest: &RehomeDest) -> anyhow::Result<MoveOutcome> {
+        let destination = match dest {
+            RehomeDest::Tab { tab_id, .. } => serde_json::json!({
+                "type": "tab",
+                "tab_id": tab_id,
+                "split": "right",
+                "ratio": 0.5
+            }),
+            RehomeDest::NewTab { workspace_id } => serde_json::json!({
+                "type": "new_tab",
+                "workspace_id": workspace_id,
+                "label": "grid"
+            }),
+            RehomeDest::NewWorkspace => serde_json::json!({
+                "type": "new_workspace",
+                "label": "grid",
+                "tab_label": "main"
+            }),
+        };
+        let result = Self::socket_request(
+            "pane.move",
+            serde_json::json!({
+                "pane_id": pane,
+                "destination": destination,
+                "focus": false
+            }),
+        )
+        .await?;
+        Self::move_outcome(result)
     }
 }

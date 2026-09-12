@@ -76,6 +76,10 @@ pub struct PaneMetadata {
     pub revision: u64,
     #[serde(skip)]
     pub process_name: Option<String>,
+    #[serde(skip)]
+    pub process_argv: Option<Vec<String>>,
+    #[serde(skip)]
+    pub process_cmdline: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,6 +98,26 @@ pub struct ProcessInfo {
 #[derive(Debug, Deserialize)]
 pub struct ForegroundProcess {
     pub name: String,
+    #[serde(default)]
+    pub argv: Option<Vec<String>>,
+    #[serde(default)]
+    pub cmdline: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SessionWorkspace {
+    pub workspace_id: String,
+    pub label: String,
+    pub active_tab_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SessionTab {
+    pub tab_id: String,
+    pub workspace_id: String,
+    pub label: String,
+    pub number: u32,
+    pub zoomed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -104,6 +128,25 @@ pub struct Snapshot {
     pub tree: LayoutNode,
     pub metadata: HashMap<PaneId, PaneMetadata>,
     pub revisions: HashMap<PaneId, u64>,
+    pub workspaces: Vec<SessionWorkspace>,
+    pub tabs: Vec<SessionTab>,
+}
+
+impl Default for Snapshot {
+    fn default() -> Self {
+        Self {
+            workspace_id: String::new(),
+            tab_id: String::new(),
+            focused_pane_id: String::new(),
+            tree: LayoutNode::Pane {
+                pane_id: String::new(),
+            },
+            metadata: HashMap::new(),
+            revisions: HashMap::new(),
+            workspaces: Vec::new(),
+            tabs: Vec::new(),
+        }
+    }
 }
 
 pub fn tree_from_rects(mut panes: Vec<WirePane>) -> anyhow::Result<LayoutNode> {

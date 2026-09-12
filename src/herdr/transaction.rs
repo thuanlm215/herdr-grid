@@ -1,5 +1,5 @@
 use super::{plan, rebuild_plan, HerdrClient, Operation, Snapshot};
-use crate::model::{is_draft_pane, Direction, LayoutNode};
+use crate::model::{is_draft_pane, Direction, LayoutNode, Rehome, RehomeDest};
 use fs2::FileExt;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
@@ -35,12 +35,21 @@ pub struct Transaction<'a, C: HerdrClient> {
 }
 impl<C: HerdrClient> Transaction<'_, C> {
     pub async fn apply(&self, target: &LayoutNode) -> anyhow::Result<()> {
-        self.apply_with_progress(target, &mut |_| {}).await
+        self.apply_preview(target, &[]).await
+    }
+
+    pub async fn apply_preview(
+        &self,
+        target: &LayoutNode,
+        rehomes: &[Rehome],
+    ) -> anyhow::Result<()> {
+        self.apply_with_progress(target, rehomes, &mut |_| {}).await
     }
 
     pub async fn apply_with_progress(
         &self,
         target: &LayoutNode,
+        rehomes: &[Rehome],
         progress: &mut dyn FnMut(ApplyProgress),
     ) -> anyhow::Result<()> {
         progress(ApplyProgress::Validating);
@@ -53,10 +62,164 @@ impl<C: HerdrClient> Transaction<'_, C> {
         {
             anyhow::bail!("layout changed since editor opened; no changes applied")
         };
+        if !rehomes.is_empty() {
+            return self.apply_with_rehomes(target, rehomes, progress).await;
+        }
         if target.pane_ids().iter().any(|id| is_draft_pane(id)) {
             return self.apply_with_drafts(target, progress).await;
         }
         self.apply_validated(target, progress).await
+    }
+
+    async fn apply_with_rehomes(
+        &self,
+        target: &LayoutNode,
+        rehomes: &[Rehome],
+        progress: &mut dyn FnMut(ApplyProgress),
+    ) -> anyhow::Result<()> {
+        let mut remaining = self.snapshot.tree.clone();
+        for rehome in rehomes {
+            remaining.detach_pane(&rehome.pane_id)?;
+        }
+        remaining.validate()?;
+        if remaining.is_empty() && target.pane_ids().iter().any(|id| is_draft_pane(id)) {
+            anyhow::bail!("can't leave only new shells on a tab that is closing");
+        }
+        let mut moved = Vec::new();
+        for (index, rehome) in rehomes.iter().enumerate() {
+            progress(ApplyProgress::Applying {
+                current: index + 1,
+                total: rehomes.len(),
+            });
+            match self
+                .client
+                .relocate_pane(&rehome.pane_id, &rehome.dest)
+                .await
+            {
+                Ok(_) => moved.push(rehome),
+                Err(cause) => {
+                    progress(ApplyProgress::Recovering);
+                    return match self.return_rehomed(&moved).await {
+                        Ok(()) => Err(anyhow::anyhow!(
+                            "could not send pane ({cause}); moved panes were returned"
+                        )),
+                        Err(error) => Err(anyhow::anyhow!(
+                            "could not send pane ({cause}); return also failed: {error}"
+                        )),
+                    };
+                }
+            }
+        }
+        if remaining.is_empty() {
+            progress(ApplyProgress::Verifying);
+            progress(ApplyProgress::Done);
+            return Ok(());
+        }
+        let anchor = remaining.pane_ids()[0].clone();
+        let live = self.client.layout_for(&anchor).await?;
+        if !equivalent(&live, &remaining) || sorted_ids(&live) != sorted_ids(&remaining) {
+            progress(ApplyProgress::Recovering);
+            let returned = self.return_rehomed(&moved).await;
+            let restored = self.recover_ambiguous_original().await;
+            return match (returned, restored) {
+                (Ok(()), Ok(())) => Err(anyhow::anyhow!(
+                    "source tab changed after sending panes; original layout restored"
+                )),
+                (Err(error), _) | (_, Err(error)) => Err(anyhow::anyhow!(
+                    "source tab changed after sending panes; recovery failed: {error}"
+                )),
+            };
+        }
+        if equivalent(target, &remaining) && sorted_ids(target) == sorted_ids(&remaining) {
+            progress(ApplyProgress::Verifying);
+            progress(ApplyProgress::Done);
+            return Ok(());
+        }
+        let remaining_snapshot = Snapshot {
+            tree: remaining,
+            focused_pane_id: anchor,
+            ..self.snapshot.clone()
+        };
+        let nested = Transaction {
+            client: self.client,
+            snapshot: &remaining_snapshot,
+        };
+        let result = if target.pane_ids().iter().any(|id| is_draft_pane(id)) {
+            nested.apply_with_drafts(target, progress).await
+        } else {
+            nested.apply_validated(target, progress).await
+        };
+        match result {
+            Ok(()) => Ok(()),
+            Err(cause) => {
+                progress(ApplyProgress::Recovering);
+                let returned = self.return_rehomed(&moved).await;
+                let restored = self.recover_ambiguous_original().await;
+                match (returned, restored) {
+                    (Ok(()), Ok(())) => Err(anyhow::anyhow!(
+                        "apply failed ({cause}); original layout restored"
+                    )),
+                    (Err(error), _) | (_, Err(error)) => Err(anyhow::anyhow!(
+                        "apply failed ({cause}); recovery failed: {error}"
+                    )),
+                }
+            }
+        }
+    }
+
+    async fn return_rehomed(&self, moved: &[&Rehome]) -> anyhow::Result<()> {
+        let mut dest = RehomeDest::Tab {
+            tab_id: self.snapshot.tab_id.clone(),
+            label: "source".into(),
+        };
+        let mut errors = Vec::new();
+        for rehome in moved.iter().rev() {
+            match self.client.relocate_pane(&rehome.pane_id, &dest).await {
+                Ok(outcome) => {
+                    dest = RehomeDest::Tab {
+                        tab_id: outcome.tab_id,
+                        label: "source".into(),
+                    };
+                }
+                Err(error) if Self::tab_is_gone(&error) => {
+                    match self
+                        .client
+                        .relocate_pane(
+                            &rehome.pane_id,
+                            &RehomeDest::NewTab {
+                                workspace_id: self.snapshot.workspace_id.clone(),
+                            },
+                        )
+                        .await
+                    {
+                        Ok(outcome) => {
+                            dest = RehomeDest::Tab {
+                                tab_id: outcome.tab_id,
+                                label: "source".into(),
+                            };
+                        }
+                        Err(created) => errors.push(format!(
+                            "{}: {error}; new tab failed: {created}",
+                            rehome.pane_id
+                        )),
+                    }
+                }
+                Err(error) => errors.push(format!("{}: {error}", rehome.pane_id)),
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!("{}", errors.join(", "))
+        }
+    }
+
+    fn tab_is_gone(error: &anyhow::Error) -> bool {
+        let text = error.to_string().to_ascii_lowercase();
+        text.contains("not found")
+            || text.contains("tab_not_found")
+            || text.contains("unknown tab")
+            || text.contains("missing tab")
     }
 
     async fn apply_validated(
@@ -104,8 +267,8 @@ impl<C: HerdrClient> Transaction<'_, C> {
                 Operation::SetRatio { path, ratio } => expected.set_ratio(path, *ratio)?,
                 _ => unreachable!(),
             }
-            let after = self.client.snapshot().await;
-            if !matches!(&after, Ok(s) if s.workspace_id == self.snapshot.workspace_id && s.tab_id == self.snapshot.tab_id && equivalent(&s.tree, &expected) && sorted_ids(&s.tree) == sorted_ids(&expected))
+            let after = self.client.layout_for(&expected.pane_ids()[0]).await;
+            if !matches!(&after, Ok(tree) if equivalent(tree, &expected) && sorted_ids(tree) == sorted_ids(&expected))
             {
                 let cause = after
                     .err()
@@ -197,12 +360,9 @@ impl<C: HerdrClient> Transaction<'_, C> {
             mapped_target.replace_pane_id(draft, actual.clone())?;
         }
         let expanded = Snapshot {
-            workspace_id: self.snapshot.workspace_id.clone(),
-            tab_id: self.snapshot.tab_id.clone(),
             focused_pane_id: anchor.clone(),
             tree: expanded_tree,
-            metadata: self.snapshot.metadata.clone(),
-            revisions: self.snapshot.revisions.clone(),
+            ..self.snapshot.clone()
         };
         let transaction = Transaction {
             client: self.client,
@@ -452,6 +612,7 @@ fn to_logical(tree: &LayoutNode, ids: &HashMap<String, String>) -> anyhow::Resul
         .collect();
     fn map(node: &LayoutNode, reverse: &HashMap<&str, &str>) -> anyhow::Result<LayoutNode> {
         Ok(match node {
+            LayoutNode::Empty => LayoutNode::Empty,
             LayoutNode::Pane { pane_id } => LayoutNode::Pane {
                 pane_id: reverse
                     .get(pane_id.as_str())
@@ -496,6 +657,7 @@ fn sorted_ids(tree: &LayoutNode) -> Vec<String> {
 
 fn equivalent(a: &LayoutNode, b: &LayoutNode) -> bool {
     match (a, b) {
+        (LayoutNode::Empty, LayoutNode::Empty) => true,
         (LayoutNode::Pane { pane_id: a }, LayoutNode::Pane { pane_id: b }) => a == b,
         (
             LayoutNode::Split {
@@ -571,6 +733,7 @@ mod tests {
             tree,
             metadata,
             revisions,
+            ..Default::default()
         }
     }
 
@@ -717,7 +880,68 @@ mod tests {
             self.committed_error(&s)?;
             Ok(Self::outcome(&s, pane, tab, None))
         }
+        async fn relocate_pane(
+            &self,
+            pane: &str,
+            dest: &crate::model::RehomeDest,
+        ) -> anyhow::Result<super::super::MoveOutcome> {
+            let mut s = self.state.lock().unwrap();
+            self.maybe_fail(&mut s)?;
+            if let crate::model::RehomeDest::Tab { tab_id, .. } = dest {
+                if !s.tabs.contains_key(tab_id) {
+                    anyhow::bail!("tab not found");
+                }
+            }
+            let source = s
+                .tabs
+                .iter()
+                .find(|(_, tree)| tree.pane_ids().iter().any(|id| id == pane))
+                .map(|(id, _)| id.clone())
+                .ok_or_else(|| anyhow::anyhow!("pane {pane} not found"))?;
+            let detached = s.tabs.get_mut(&source).unwrap().detach_pane(pane)?;
+            if s.tabs
+                .get(&source)
+                .is_some_and(|tree| tree.is_empty() || tree.pane_ids().is_empty())
+            {
+                s.tabs.remove(&source);
+            }
+            let (tab, created) = match dest {
+                crate::model::RehomeDest::Tab { tab_id, .. } => {
+                    let _ = detached;
+                    let target = s.tabs[tab_id].pane_ids()[0].clone();
+                    s.tabs.get_mut(tab_id).unwrap().insert_second(
+                        &target,
+                        pane.into(),
+                        crate::model::Direction::Horizontal,
+                        0.5,
+                    )?;
+                    (tab_id.clone(), None)
+                }
+                crate::model::RehomeDest::NewTab { workspace_id } => {
+                    let tab = unique_tab_id(&mut s, workspace_id);
+                    s.tabs.insert(tab.clone(), detached);
+                    (tab.clone(), Some(tab))
+                }
+                crate::model::RehomeDest::NewWorkspace => {
+                    let tab = unique_tab_id(&mut s, "wnew");
+                    s.tabs.insert(tab.clone(), detached);
+                    (tab.clone(), Some(tab))
+                }
+            };
+            self.committed_error(&s)?;
+            Ok(Self::outcome(&s, pane, &tab, created))
+        }
     }
+    fn unique_tab_id(state: &mut StructuralState, workspace_id: &str) -> String {
+        loop {
+            state.next_tab += 1;
+            let tab = format!("{workspace_id}:t{}", state.next_tab);
+            if !state.tabs.contains_key(&tab) {
+                return tab;
+            }
+        }
+    }
+
     fn structural_fake(original: LayoutNode, fail_at: Option<usize>) -> StructuralFake {
         let mut tabs = HashMap::new();
         tabs.insert("w1:t1".into(), original);
@@ -762,7 +986,7 @@ mod tests {
             client: &fake,
             snapshot: &before,
         }
-        .apply_with_progress(&target, &mut |update| updates.push(update))
+        .apply_with_progress(&target, &[], &mut |update| updates.push(update))
         .await
         .unwrap();
         assert_eq!(updates.first(), Some(&ApplyProgress::Validating));
@@ -1055,5 +1279,120 @@ mod tests {
 
         assert!(error.to_string().contains("created panes were removed"));
         assert_eq!(fake.state.lock().unwrap().0, original);
+    }
+
+    #[tokio::test]
+    async fn rehome_moves_pane_off_the_source_tab() {
+        let _serial = TEST_LOCK.lock().await;
+        let original = tree(["a", "b", "c"]);
+        let fake = structural_fake(original.clone(), None);
+        fake.state.lock().unwrap().tabs.insert(
+            "w1:t2".into(),
+            LayoutNode::Pane {
+                pane_id: "keep".into(),
+            },
+        );
+        let mut remaining = original.clone();
+        remaining.detach_pane("c").unwrap();
+        Transaction {
+            client: &fake,
+            snapshot: &snapshot(original.clone()),
+        }
+        .apply_preview(
+            &remaining,
+            &[crate::model::Rehome {
+                pane_id: "c".into(),
+                dest: crate::model::RehomeDest::Tab {
+                    tab_id: "w1:t2".into(),
+                    label: "logs".into(),
+                },
+            }],
+        )
+        .await
+        .unwrap();
+        let tabs = fake.state.lock().unwrap().tabs.clone();
+        assert_eq!(sorted_ids(&tabs["w1:t1"]), sorted_ids(&remaining));
+        assert!(tabs["w1:t2"].pane_ids().iter().any(|id| id == "c"));
+    }
+
+    #[tokio::test]
+    async fn last_pane_rehome_closes_the_source_tab() {
+        let _serial = TEST_LOCK.lock().await;
+        let original = LayoutNode::Pane {
+            pane_id: "a".into(),
+        };
+        let fake = structural_fake(original.clone(), None);
+        fake.state.lock().unwrap().tabs.insert(
+            "w1:t2".into(),
+            LayoutNode::Pane {
+                pane_id: "keep".into(),
+            },
+        );
+        Transaction {
+            client: &fake,
+            snapshot: &snapshot(original.clone()),
+        }
+        .apply_preview(
+            &LayoutNode::Empty,
+            &[crate::model::Rehome {
+                pane_id: "a".into(),
+                dest: crate::model::RehomeDest::Tab {
+                    tab_id: "w1:t2".into(),
+                    label: "logs".into(),
+                },
+            }],
+        )
+        .await
+        .unwrap();
+        let tabs = fake.state.lock().unwrap().tabs.clone();
+        assert!(!tabs.contains_key("w1:t1"));
+        assert!(tabs["w1:t2"].pane_ids().iter().any(|id| id == "a"));
+    }
+
+    #[tokio::test]
+    async fn return_rehomed_opens_a_new_tab_when_source_tab_is_gone() {
+        let _serial = TEST_LOCK.lock().await;
+        let original = LayoutNode::Pane {
+            pane_id: "a".into(),
+        };
+        let fake = structural_fake(original.clone(), None);
+        {
+            let mut state = fake.state.lock().unwrap();
+            state.tabs.remove("w1:t1");
+            state.tabs.insert(
+                "w1:t2".into(),
+                LayoutNode::Split {
+                    direction: Direction::Horizontal,
+                    ratio: 0.5,
+                    first: Box::new(LayoutNode::Pane {
+                        pane_id: "keep".into(),
+                    }),
+                    second: Box::new(LayoutNode::Pane {
+                        pane_id: "a".into(),
+                    }),
+                },
+            );
+        }
+        let rehome = crate::model::Rehome {
+            pane_id: "a".into(),
+            dest: crate::model::RehomeDest::Tab {
+                tab_id: "w1:t2".into(),
+                label: "logs".into(),
+            },
+        };
+        Transaction {
+            client: &fake,
+            snapshot: &snapshot(original),
+        }
+        .return_rehomed(&[&rehome])
+        .await
+        .unwrap();
+        let tabs = fake.state.lock().unwrap().tabs.clone();
+        assert!(
+            tabs.iter()
+                .any(|(tab, tree)| tab != "w1:t2" && tree.pane_ids().iter().any(|id| id == "a")),
+            "pane a should land on a new tab in the original workspace: {tabs:?}"
+        );
+        assert!(!tabs["w1:t2"].pane_ids().iter().any(|id| id == "a"));
     }
 }

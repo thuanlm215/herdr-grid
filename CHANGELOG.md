@@ -6,6 +6,24 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-12
+
+### Added
+
+- Send a live pane to another tab, a new tab, or another workspace from the
+  destination strip. The move stays in the preview until Apply.
+- Hover a workspace while dragging to reveal that workspace's tabs as drop
+  targets.
+- Send the last live pane of a tab; Herdr closes the empty source tab on Apply.
+- If Apply fails after that tab is gone, restore moved panes onto a new tab in
+  the original workspace.
+- Show agent name and status, OSC title, and process argv on each tile.
+- Dismiss status toasts automatically after three seconds.
+
+### Changed
+
+- Open the editor popup at 90% of the Herdr window.
+
 ## [0.4.0] - 2026-09-04
 
 ### Added
@@ -86,7 +104,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Pre-apply stale-state validation and post-operation verification.
 - Transaction recovery for ambiguous or partially completed Herdr operations.
 
-[Unreleased]: https://github.com/thuanlm215/herdr-grid/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/thuanlm215/herdr-grid/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/thuanlm215/herdr-grid/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/thuanlm215/herdr-grid/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/thuanlm215/herdr-grid/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/thuanlm215/herdr-grid/compare/v0.2.1...v0.3.0

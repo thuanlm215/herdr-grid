@@ -2,26 +2,28 @@ use crate::{
     app::{App, DropPreview, MessageKind, NamePromptKind, PresetPage},
     herdr::ApplyProgress,
     model::{
-        is_draft_pane, ActionZone, AddZone, Edge, Geometry, PaneRect, PresetCardZone, PresetKind,
-        Rect, UiAction,
+        is_draft_pane, ActionZone, AddZone, DestChip, DestChipZone, Edge, Geometry, PaneRect,
+        PresetCardZone, PresetKind, Rect, UiAction,
     },
 };
 use ratatui::{
-    layout::{Alignment, Constraint, Layout},
+    layout::{Alignment, Constraint, Layout, Margin},
     prelude::*,
     widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
 };
 
 pub fn draw(frame: &mut Frame, app: &App) -> Geometry {
     let outer = frame.area();
+    let dest_height = u16::from(app.preset_picker.is_none()) * 4;
     let rows = Layout::vertical([
         Constraint::Length(3),
+        Constraint::Length(dest_height),
         Constraint::Min(5),
         Constraint::Length(2),
     ])
     .split(outer);
 
-    let canvas = rows[1];
+    let canvas = rows[2];
     let mut geo = Geometry::calculate(
         &app.preview,
         Rect {
@@ -32,6 +34,17 @@ pub fn draw(frame: &mut Frame, app: &App) -> Geometry {
         },
     );
     render_toolbar(frame, app, rows[0], &mut geo);
+    if dest_height > 0 {
+        render_dest_strip(frame, app, rows[1], &mut geo);
+    }
+    if app.preview.is_empty() {
+        frame.render_widget(
+            Paragraph::new("This tab will close on Apply")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::DarkGray)),
+            canvas,
+        );
+    }
     for pane in &geo.panes {
         render_pane(frame, app, pane);
     }
@@ -50,7 +63,7 @@ pub fn draw(frame: &mut Frame, app: &App) -> Geometry {
                 .borders(Borders::TOP)
                 .border_style(footer_style),
         ),
-        rows[2],
+        rows[3],
     );
 
     if app.preset_picker.is_some() {
@@ -72,11 +85,11 @@ pub fn draw(frame: &mut Frame, app: &App) -> Geometry {
 
 fn render_message(frame: &mut Frame, app: &App, bounds: ratatui::layout::Rect) {
     let message = app.message.as_ref().unwrap();
-    let (color, title) = match message.kind {
-        MessageKind::Error => (Color::Red, " Error · Esc dismiss "),
-        MessageKind::Success => (Color::LightGreen, " Done · Esc dismiss "),
+    let color = match message.kind {
+        MessageKind::Error => Color::Red,
+        MessageKind::Success => Color::LightGreen,
     };
-    let width = (message.text.chars().count() as u16 + 6).clamp(24, bounds.width.max(1));
+    let width = (message.text.chars().count() as u16 + 4).clamp(12, bounds.width.max(1));
     let height = 3.min(bounds.height);
     let area = ratatui::layout::Rect::new(
         bounds.x.saturating_add(bounds.width.saturating_sub(width)),
@@ -89,16 +102,100 @@ fn render_message(frame: &mut Frame, app: &App, bounds: ratatui::layout::Rect) {
     frame.render_widget(Clear, area);
     frame.render_widget(
         Paragraph::new(message.text.as_str())
+            .alignment(Alignment::Center)
             .style(Style::default().fg(color))
             .wrap(Wrap { trim: true })
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(color))
-                    .title(title),
+                    .border_style(Style::default().fg(color)),
             ),
         area,
     );
+}
+
+fn render_dest_strip(
+    frame: &mut Frame,
+    app: &App,
+    area: ratatui::layout::Rect,
+    geo: &mut Geometry,
+) {
+    let lines = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(area);
+    render_chip_row(
+        frame,
+        app,
+        "workspace",
+        &app.workspace_chips(),
+        lines[1],
+        geo,
+    );
+    render_chip_row(frame, app, "tab", &app.tab_chips(), lines[2], geo);
+}
+
+fn render_chip_row(
+    frame: &mut Frame,
+    app: &App,
+    kind: &str,
+    chips: &[DestChip],
+    area: ratatui::layout::Rect,
+    geo: &mut Geometry,
+) {
+    let prefix = format!(" {kind:<9} ");
+    let prefix_width = prefix.chars().count() as u16;
+    if area.width <= prefix_width {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(prefix).style(Style::default().fg(Color::DarkGray)),
+        ratatui::layout::Rect::new(area.x, area.y, prefix_width, 1),
+    );
+    let highlighted = app.highlighted_dest();
+    let mut x = area.x.saturating_add(prefix_width);
+    for chip in chips {
+        let remaining = area.width.saturating_sub(x.saturating_sub(area.x));
+        if remaining < 5 {
+            break;
+        }
+        let width = chip.width().min(remaining);
+        let gap = u16::from(x + width < area.x + area.width);
+        let rect = Rect {
+            x,
+            y: area.y,
+            width: width.saturating_add(gap),
+            height: 1,
+        };
+        geo.dest_zones.push(DestChipZone {
+            dest: chip.id.clone(),
+            rect,
+        });
+        let hovered = highlighted.as_ref() == Some(&chip.id);
+        let style = if hovered {
+            Style::default().fg(Color::Black).bg(Color::Cyan)
+        } else if chip.current {
+            Style::default().fg(Color::Cyan).bold()
+        } else if !chip.enabled {
+            Style::default().fg(Color::DarkGray)
+        } else if chip.badge.is_some() {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let label = match &chip.badge {
+            Some(badge) => format!(" {} {badge} ", chip.label),
+            None => format!(" {} ", chip.label),
+        };
+        frame.render_widget(
+            Paragraph::new(label).style(style),
+            ratatui::layout::Rect::new(x, area.y, width, 1),
+        );
+        x = x.saturating_add(width.saturating_add(1));
+    }
 }
 
 fn render_toolbar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, geo: &mut Geometry) {
@@ -524,25 +621,35 @@ fn preset_preview_rect(rect: ratatui::layout::Rect, preset: PresetKind) -> ratat
 fn render_pane(frame: &mut Frame, app: &App, pane: &PaneRect) {
     let draft = is_draft_pane(&pane.pane_id);
     let metadata = app.snapshot.metadata.get(&pane.pane_id);
-    let raw_title = if draft {
-        "New shell"
-    } else {
-        metadata
-            .and_then(|value| value.terminal_title_stripped.as_deref())
-            .unwrap_or(&pane.pane_id)
-    };
     let cwd = metadata
         .and_then(|value| value.cwd.as_deref())
         .map(compact_cwd)
         .unwrap_or_default();
-    let title = visible_title(raw_title, &cwd);
     let process = metadata.and_then(|value| value.process_name.as_deref());
     let agent = metadata.and_then(|value| value.agent.as_deref());
     let status = metadata.and_then(|value| value.agent_status.as_deref());
-    let secondary = if draft {
-        "Created on Apply".into()
+    let primary = if draft {
+        "New shell".into()
     } else {
         secondary_label(agent, process, status)
+    };
+    let title = if draft {
+        None
+    } else {
+        metadata
+            .and_then(|value| value.terminal_title_stripped.as_deref())
+            .and_then(|raw| visible_title(raw, &cwd))
+            .filter(|title| *title != primary && Some(*title) != agent && Some(*title) != process)
+    };
+    let command = if draft {
+        None
+    } else {
+        process_command_label(
+            metadata.and_then(|value| value.process_argv.as_deref()),
+            metadata.and_then(|value| value.process_cmdline.as_deref()),
+            process,
+        )
+        .filter(|command| command != &primary && Some(command.as_str()) != title)
     };
 
     let selected = pane.pane_id == app.selected;
@@ -561,14 +668,16 @@ fn render_pane(frame: &mut Frame, app: &App, pane: &PaneRect) {
     } else {
         Color::DarkGray
     };
-    let mut lines = Vec::new();
+    let mut lines = vec![Line::from(Span::styled(primary, Style::default().bold()))];
     if let Some(title) = title {
-        lines.push(Line::from(Span::styled(title, Style::default().bold())));
+        lines.push(Line::from(title));
     }
-    if !secondary.is_empty() {
-        lines.push(Line::from(secondary));
+    if let Some(command) = command {
+        lines.push(Line::from(command));
     }
-    if !cwd.is_empty() {
+    if draft {
+        lines.push(Line::from("Created on Apply"));
+    } else if !cwd.is_empty() {
         lines.push(Line::from(Span::styled(
             cwd,
             Style::default().fg(Color::DarkGray),
@@ -761,7 +870,7 @@ fn footer(app: &App) -> String {
             ApplyProgress::Done => "Layout applied".into(),
         };
     }
-    let modified = if app.preview != app.snapshot.tree {
+    let modified = if app.is_modified() {
         " · Modified"
     } else {
         ""
@@ -769,13 +878,45 @@ fn footer(app: &App) -> String {
     if app.preset_picker.is_some() {
         return "Enter: Preview · /: Switch Built-in ↔ Saved · Esc: Back · ?: Help".into();
     }
+    if app.preview.is_empty() {
+        return format!("This tab will close on Apply · Enter Apply · Esc cancel{modified}");
+    }
+    if let Some(dest) = app.highlighted_dest() {
+        if let Some(chip) = app.dest_chips().into_iter().find(|chip| chip.id == dest) {
+            if let Some(pane) = app.moving_pane() {
+                if !chip.enabled {
+                    return chip
+                        .reason
+                        .unwrap_or_else(|| "Can't send a pane there".into());
+                }
+                return format!(
+                    "Send {} → {}, split right",
+                    short_pane_id(pane),
+                    chip.label.trim_start_matches('▸').trim()
+                );
+            }
+        }
+    }
+    if !app.rehomes.is_empty() {
+        let dests: Vec<_> = app
+            .rehomes
+            .iter()
+            .map(|rehome| rehome.dest.display_label())
+            .collect();
+        let unique = dests.first().cloned().unwrap_or_default();
+        let n = app.rehomes.len();
+        let pane = if n == 1 { "pane" } else { "panes" };
+        return format!("{n} {pane} moving to {unique} · Enter Apply · Esc cancel{modified}");
+    }
     if app.dragging.is_some() {
-        return format!("Drop on center to swap · Drop on edge to split{modified}");
+        return format!(
+            "Drop on a tab to send · Drop on center to swap · Drop on edge to split{modified}"
+        );
     }
     if app.carrying.is_some() {
-        return format!("Arrows choose target · Space Drop · Esc Release · ? Help{modified}");
+        return format!("Tab chooses a tab · Space Drop · Esc Release · ? Help{modified}");
     }
-    format!("Drag to arrange · Click + to add · ? Help{modified}")
+    format!("Drag to arrange · Drop on a tab to send · Click + to add · ? Help{modified}")
 }
 
 fn render_help(frame: &mut Frame, app: &App) {
@@ -804,6 +945,7 @@ fn render_help(frame: &mut Frame, app: &App) {
             Line::from("  Selected pane +    Add a draft shell on that edge"),
             Line::from("  Drag to center     Swap panes"),
             Line::from("  Drag to edge       Re-parent pane"),
+            Line::from("  Drag onto a tab    Send pane there on Apply"),
             Line::from("  Drag divider       Resize split"),
             Line::from(""),
             Line::styled("Keyboard", Style::default().fg(Color::Cyan).bold()),
@@ -811,6 +953,7 @@ fn render_help(frame: &mut Frame, app: &App) {
             Line::from("  s                  Save preview as a custom layout"),
             Line::from("  Arrows / h j k l   Select spatially"),
             Line::from("  Space              Pick up / drop"),
+            Line::from("  Tab / Shift+Tab    Choose a destination tab while carrying"),
             Line::from("  [ / ]              Resize selected split"),
             Line::from("  =                  Balance all splits 50/50"),
             Line::from("  u / r              Undo / reset preview"),
@@ -876,6 +1019,61 @@ fn secondary_label(agent: Option<&str>, process: Option<&str>, status: Option<&s
     }
 }
 
+fn process_command_label(
+    argv: Option<&[String]>,
+    cmdline: Option<&str>,
+    process_name: Option<&str>,
+) -> Option<String> {
+    let command = if let Some(argv) = argv.filter(|argv| !argv.is_empty()) {
+        format_argv(argv)
+    } else {
+        let cmdline = cmdline.map(str::trim).filter(|value| !value.is_empty())?;
+        format_cmdline(cmdline)
+    };
+    (!command_is_redundant(&command, process_name)).then_some(command)
+}
+
+fn format_argv(argv: &[String]) -> String {
+    argv.iter()
+        .enumerate()
+        .map(|(index, arg)| {
+            if index == 0 {
+                basename_leaf(arg)
+            } else {
+                compact_cwd(arg)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn format_cmdline(cmdline: &str) -> String {
+    let mut parts = cmdline.split_whitespace();
+    match parts.next() {
+        None => cmdline.into(),
+        Some(first) => std::iter::once(basename_leaf(first))
+            .chain(parts.map(compact_cwd))
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
+}
+
+fn basename_leaf(path: &str) -> String {
+    path.rsplit('/')
+        .next()
+        .filter(|leaf| !leaf.is_empty())
+        .unwrap_or(path)
+        .into()
+}
+
+fn command_is_redundant(command: &str, process_name: Option<&str>) -> bool {
+    let command = command.trim();
+    command.is_empty()
+        || process_name.is_some_and(|name| {
+            command == name || command == format!("-{name}") || command == basename_leaf(name)
+        })
+}
+
 fn compact_cwd(cwd: &str) -> String {
     if let Ok(home) = std::env::var("HOME") {
         if cwd == home {
@@ -937,7 +1135,10 @@ fn from_ratatui(rect: ratatui::layout::Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{herdr::Snapshot, model::LayoutNode};
+    use crate::{
+        herdr::Snapshot,
+        model::{DestId, LayoutNode},
+    };
     use ratatui::{backend::TestBackend, Terminal};
     use std::collections::HashMap;
 
@@ -963,6 +1164,31 @@ mod tests {
         assert_eq!(
             visible_title("Shopify store limits - grok", "~"),
             Some("Shopify store limits - grok")
+        );
+    }
+
+    #[test]
+    fn argv_is_preferred_over_cmdline_and_skips_the_bare_process_name() {
+        assert_eq!(
+            process_command_label(
+                Some(&[
+                    "/usr/bin/node".into(),
+                    "/usr/bin/pnpm".into(),
+                    "run".into(),
+                    "dev".into()
+                ]),
+                Some("/usr/bin/node /usr/bin/pnpm run dev"),
+                Some("node"),
+            ),
+            Some("node /usr/bin/pnpm run dev".into())
+        );
+        assert_eq!(
+            process_command_label(None, Some("/bin/zsh"), Some("zsh")),
+            None
+        );
+        assert_eq!(
+            process_command_label(None, Some("claude --resume abc"), Some("claude")),
+            Some("claude --resume abc".into())
         );
     }
 
@@ -993,6 +1219,76 @@ mod tests {
     }
 
     #[test]
+    fn dest_strip_exposes_tab_chips() {
+        let mut snapshot = Snapshot {
+            workspace_id: "w".into(),
+            tab_id: "t".into(),
+            focused_pane_id: "p1".into(),
+            tree: LayoutNode::Pane {
+                pane_id: "p1".into(),
+            },
+            ..Default::default()
+        };
+        snapshot.workspaces = vec![crate::herdr::SessionWorkspace {
+            workspace_id: "w".into(),
+            label: "herdr-grid".into(),
+            active_tab_id: Some("t".into()),
+        }];
+        snapshot.tabs = vec![
+            crate::herdr::SessionTab {
+                tab_id: "t".into(),
+                workspace_id: "w".into(),
+                label: "main".into(),
+                number: 1,
+                zoomed: false,
+            },
+            crate::herdr::SessionTab {
+                tab_id: "t2".into(),
+                workspace_id: "w".into(),
+                label: "logs".into(),
+                number: 2,
+                zoomed: false,
+            },
+        ];
+        let app = App::new(snapshot);
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        let mut geometry = None;
+        terminal
+            .draw(|frame| geometry = Some(draw(frame, &app)))
+            .unwrap();
+        let geometry = geometry.unwrap();
+        assert!(geometry
+            .dest_zones
+            .iter()
+            .any(|zone| zone.dest == DestId::Workspace("w".into())));
+        assert!(geometry
+            .dest_zones
+            .iter()
+            .any(|zone| zone.dest == DestId::Tab("t2".into())));
+        assert!(geometry
+            .dest_zones
+            .iter()
+            .any(|zone| matches!(zone.dest, DestId::NewTab { .. })));
+        assert!(geometry
+            .dest_zones
+            .iter()
+            .any(|zone| zone.dest == DestId::NewWorkspace));
+        let buffer = terminal.backend().buffer();
+        let names = (0..buffer.area.height)
+            .flat_map(|y| {
+                (0..buffer.area.width).map(move |x| {
+                    buffer
+                        .cell((x, y))
+                        .map(|cell| cell.symbol().to_string())
+                        .unwrap_or_default()
+                })
+            })
+            .collect::<String>();
+        assert!(names.contains("herdr-grid"), "{names}");
+        assert!(names.contains("logs"), "{names}");
+    }
+
+    #[test]
     fn preset_gallery_renders_every_template_and_exposes_mouse_targets() {
         let mut app = App::new(Snapshot {
             workspace_id: "w".into(),
@@ -1003,6 +1299,7 @@ mod tests {
             },
             metadata: HashMap::new(),
             revisions: HashMap::new(),
+            ..Default::default()
         });
         app.open_preset_picker();
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
@@ -1044,6 +1341,7 @@ mod tests {
             },
             metadata: HashMap::new(),
             revisions: HashMap::new(),
+            ..Default::default()
         });
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
         terminal.draw(|frame| drop(draw(frame, &app))).unwrap();
@@ -1071,6 +1369,7 @@ mod tests {
             },
             metadata: HashMap::new(),
             revisions: HashMap::new(),
+            ..Default::default()
         });
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
         let mut geometry = None;
@@ -1116,6 +1415,7 @@ mod tests {
             },
             metadata: HashMap::new(),
             revisions: HashMap::new(),
+            ..Default::default()
         });
         app.open_preset_picker();
         app.toggle_preset_collection();
@@ -1157,6 +1457,7 @@ mod tests {
             },
             metadata: HashMap::new(),
             revisions: HashMap::new(),
+            ..Default::default()
         });
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
         let mut without_message = None;

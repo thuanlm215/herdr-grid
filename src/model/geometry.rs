@@ -1,4 +1,4 @@
-use super::{Direction, Edge, LayoutNode, PaneId, SplitPath};
+use super::{DestChipZone, DestId, Direction, Edge, LayoutNode, PaneId, SplitPath};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
@@ -61,6 +61,7 @@ pub struct Geometry {
     pub add_zones: Vec<AddZone>,
     pub preset_cards: Vec<PresetCardZone>,
     pub action_zones: Vec<ActionZone>,
+    pub dest_zones: Vec<DestChipZone>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Hit {
@@ -73,6 +74,7 @@ impl Geometry {
     pub fn calculate(tree: &LayoutNode, area: Rect) -> Self {
         fn go(n: &LayoutNode, r: Rect, p: &mut SplitPath, g: &mut Geometry) {
             match n {
+                LayoutNode::Empty => {}
                 LayoutNode::Pane { pane_id } => g.panes.push(PaneRect {
                     pane_id: pane_id.clone(),
                     rect: r,
@@ -220,6 +222,12 @@ impl Geometry {
             .rev()
             .find(|zone| inside(zone.rect, x, y))
             .map(|zone| zone.action)
+    }
+    pub fn hit_dest(&self, x: u16, y: u16) -> Option<DestId> {
+        self.dest_zones
+            .iter()
+            .find(|zone| inside(zone.rect, x, y))
+            .map(|zone| zone.dest.clone())
     }
 }
 fn inside(r: Rect, x: u16, y: u16) -> bool {
