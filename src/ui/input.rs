@@ -4,10 +4,12 @@ use crate::{
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum Action {
     Continue,
     Apply,
     Cancel,
+    SwitchTab { pane_id: String },
 }
 pub fn key(app: &mut App, k: KeyEvent) -> Action {
     if k.kind == KeyEventKind::Release {
@@ -317,7 +319,21 @@ pub fn mouse(app: &mut App, m: MouseEvent, g: &Geometry, drag: &mut Option<DragS
                     app.set_dest_hover(None);
                 }
             }
-            Some(DragState::Divider(_)) | None => {}
+            Some(DragState::Divider(_)) => {}
+            None => {
+                if app.moving_pane().is_none() {
+                    if let Some(dest) = g.hit_dest(m.column, m.row) {
+                        return match app.click_dest(&dest) {
+                            Ok(Some(pane_id)) => Action::SwitchTab { pane_id },
+                            Ok(None) => Action::Continue,
+                            Err(error) => {
+                                app.set_error(error);
+                                Action::Continue
+                            }
+                        };
+                    }
+                }
+            }
         },
         _ => {}
     }
@@ -441,6 +457,7 @@ mod tests {
                 label: "main".into(),
                 number: 1,
                 zoomed: false,
+                focused_pane_id: Some("a".into()),
             },
             SessionTab {
                 tab_id: "t2".into(),
@@ -448,6 +465,7 @@ mod tests {
                 label: "logs".into(),
                 number: 2,
                 zoomed: false,
+                focused_pane_id: Some("keep".into()),
             },
             SessionTab {
                 tab_id: "t3".into(),
@@ -455,6 +473,7 @@ mod tests {
                 label: "zoom".into(),
                 number: 3,
                 zoomed: true,
+                focused_pane_id: Some("z".into()),
             },
         ];
         app
@@ -1036,6 +1055,7 @@ mod tests {
             label: "review".into(),
             number: 1,
             zoomed: false,
+            focused_pane_id: Some("r".into()),
         });
         app.dragging = Some("a".into());
         assert!(app
@@ -1058,6 +1078,68 @@ mod tests {
             .workspace_chips()
             .iter()
             .any(|chip| chip.current && chip.label == "herdr-grid"));
+        let labels: Vec<_> = app
+            .workspace_chips()
+            .into_iter()
+            .filter(|chip| !matches!(chip.id, DestId::NewWorkspace))
+            .map(|chip| chip.label)
+            .collect();
+        assert_eq!(labels, ["herdr-grid", "english-devops"]);
+    }
+
+    #[test]
+    fn workspace_chips_keep_herdr_order() {
+        let mut app = rehome_app();
+        app.snapshot.workspaces = vec![
+            SessionWorkspace {
+                workspace_id: "w2".into(),
+                label: "english-devops".into(),
+                active_tab_id: Some("t4".into()),
+            },
+            SessionWorkspace {
+                workspace_id: "w".into(),
+                label: "herdr-grid".into(),
+                active_tab_id: Some("t".into()),
+            },
+        ];
+        let labels: Vec<_> = app
+            .workspace_chips()
+            .into_iter()
+            .filter(|chip| !matches!(chip.id, DestId::NewWorkspace))
+            .map(|chip| chip.label)
+            .collect();
+        assert_eq!(labels, ["english-devops", "herdr-grid"]);
+        assert!(app.workspace_chips()[1].current);
+    }
+
+    #[test]
+    fn tab_chips_keep_snapshot_order() {
+        let mut app = rehome_app();
+        app.snapshot.tabs = vec![
+            SessionTab {
+                tab_id: "t2".into(),
+                workspace_id: "w".into(),
+                label: "logs".into(),
+                number: 2,
+                zoomed: false,
+                focused_pane_id: Some("keep".into()),
+            },
+            SessionTab {
+                tab_id: "t".into(),
+                workspace_id: "w".into(),
+                label: "main".into(),
+                number: 1,
+                zoomed: false,
+                focused_pane_id: Some("a".into()),
+            },
+        ];
+        let labels: Vec<_> = app
+            .tab_chips()
+            .into_iter()
+            .filter(|chip| !matches!(chip.id, DestId::NewTab { .. }))
+            .map(|chip| chip.label)
+            .collect();
+        assert_eq!(labels, ["logs", "main*"]);
     }
 
     #[test]
@@ -1143,5 +1225,74 @@ mod tests {
         );
         assert_eq!(app.preview.pane_ids(), ["b"]);
         assert_eq!(app.rehomes[0].pane_id, "a");
+    }
+
+    #[test]
+    fn clicking_a_tab_while_modified_asks_to_apply_or_cancel() {
+        let mut app = rehome_app();
+        app.rehome("b", DestId::Tab("t2".into()));
+        assert!(app.is_modified());
+        let error = app.click_dest(&DestId::Tab("t2".into())).unwrap_err();
+        assert_eq!(error, "Apply or Cancel before switching tabs");
+    }
+
+    #[test]
+    fn clicking_a_tab_when_clean_requests_that_tab() {
+        let app = rehome_app();
+        assert_eq!(
+            app.click_dest(&DestId::Tab("t2".into())).unwrap(),
+            Some("keep".into())
+        );
+        assert_eq!(app.click_dest(&DestId::Tab("t".into())).unwrap(), None);
+    }
+
+    #[test]
+    fn clicking_a_dest_chip_switches_tabs() {
+        let mut app = rehome_app();
+        let mut geometry = Geometry::default();
+        geometry.dest_zones.push(DestChipZone {
+            dest: DestId::Tab("t2".into()),
+            rect: Rect {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 1,
+            },
+        });
+        let mut drag = None;
+        let action = mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: 3,
+                row: 0,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+            &geometry,
+            &mut drag,
+        );
+        assert_eq!(
+            action,
+            Action::SwitchTab {
+                pane_id: "keep".into()
+            }
+        );
+    }
+
+    #[test]
+    fn adopt_snapshot_clears_pending_edits() {
+        let mut app = rehome_app();
+        app.rehome("b", DestId::Tab("t2".into()));
+        let mut snapshot = app.snapshot.clone();
+        snapshot.tab_id = "t2".into();
+        snapshot.focused_pane_id = "keep".into();
+        snapshot.tree = LayoutNode::Pane {
+            pane_id: "keep".into(),
+        };
+        app.adopt_snapshot(snapshot);
+        assert_eq!(app.snapshot.tab_id, "t2");
+        assert_eq!(app.preview.pane_ids(), ["keep"]);
+        assert!(app.rehomes.is_empty());
+        assert!(!app.is_modified());
     }
 }

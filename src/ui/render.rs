@@ -916,7 +916,9 @@ fn footer(app: &App) -> String {
     if app.carrying.is_some() {
         return format!("Tab chooses a tab · Space Drop · Esc Release · ? Help{modified}");
     }
-    format!("Drag to arrange · Drop on a tab to send · Click + to add · ? Help{modified}")
+    format!(
+        "Drag to arrange · Drop on a tab to send · Click a tab to edit it · Click + to add · ? Help{modified}"
+    )
 }
 
 fn render_help(frame: &mut Frame, app: &App) {
@@ -946,6 +948,7 @@ fn render_help(frame: &mut Frame, app: &App) {
             Line::from("  Drag to center     Swap panes"),
             Line::from("  Drag to edge       Re-parent pane"),
             Line::from("  Drag onto a tab    Send pane there on Apply"),
+            Line::from("  Click a tab        Edit that tab (Apply or Cancel first if modified)"),
             Line::from("  Drag divider       Resize split"),
             Line::from(""),
             Line::styled("Keyboard", Style::default().fg(Color::Cyan).bold()),
@@ -1241,6 +1244,7 @@ mod tests {
                 label: "main".into(),
                 number: 1,
                 zoomed: false,
+                focused_pane_id: Some("p1".into()),
             },
             crate::herdr::SessionTab {
                 tab_id: "t2".into(),
@@ -1248,6 +1252,7 @@ mod tests {
                 label: "logs".into(),
                 number: 2,
                 zoomed: false,
+                focused_pane_id: Some("p2".into()),
             },
         ];
         let app = App::new(snapshot);

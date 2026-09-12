@@ -118,6 +118,7 @@ pub struct SessionTab {
     pub label: String,
     pub number: u32,
     pub zoomed: bool,
+    pub focused_pane_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]

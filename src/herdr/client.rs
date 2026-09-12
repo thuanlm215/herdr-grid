@@ -56,6 +56,10 @@ pub trait HerdrClient: Send + Sync {
     async fn relocate_pane(&self, _pane: &str, _dest: &RehomeDest) -> anyhow::Result<MoveOutcome> {
         anyhow::bail!("pane relocation is not implemented by this client")
     }
+    async fn snapshot_pane(&self, pane: &str) -> anyhow::Result<Snapshot> {
+        let _ = pane;
+        self.snapshot().await
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -237,18 +241,33 @@ fn parse_session_destinations(
     current_workspace: &str,
     current_tab: &str,
 ) -> (Vec<SessionWorkspace>, Vec<SessionTab>) {
-    let zoomed: HashMap<String, bool> = snapshot
-        .get("layouts")
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|layout| {
-            Some((
-                layout.get("tab_id")?.as_str()?.to_owned(),
-                layout.get("zoomed").and_then(|value| value.as_bool())?,
-            ))
-        })
-        .collect();
+    let mut zoomed: HashMap<String, bool> = HashMap::new();
+    let mut focused: HashMap<String, String> = HashMap::new();
+    if let Some(layouts) = snapshot.get("layouts").and_then(|value| value.as_array()) {
+        for layout in layouts {
+            let Some(tab_id) = layout.get("tab_id").and_then(|value| value.as_str()) else {
+                continue;
+            };
+            if let Some(is_zoomed) = layout.get("zoomed").and_then(|value| value.as_bool()) {
+                zoomed.insert(tab_id.to_owned(), is_zoomed);
+            }
+            if let Some(pane_id) = layout
+                .get("focused_pane_id")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+            {
+                focused.insert(tab_id.to_owned(), pane_id.to_owned());
+            } else if let Some(pane_id) = layout
+                .get("panes")
+                .and_then(|value| value.as_array())
+                .and_then(|panes| panes.first())
+                .and_then(|pane| pane.get("pane_id"))
+                .and_then(|value| value.as_str())
+            {
+                focused.insert(tab_id.to_owned(), pane_id.to_owned());
+            }
+        }
+    }
     let workspaces = snapshot
         .get("workspaces")
         .and_then(|value| value.as_array())
@@ -278,6 +297,7 @@ fn parse_session_destinations(
             let tab_id = tab.get("tab_id")?.as_str()?.to_owned();
             Some(SessionTab {
                 zoomed: zoomed.get(&tab_id).copied().unwrap_or(false),
+                focused_pane_id: focused.get(&tab_id).cloned(),
                 workspace_id: tab
                     .get("workspace_id")
                     .and_then(|value| value.as_str())
@@ -297,24 +317,24 @@ fn parse_session_destinations(
         })
         .collect::<Vec<_>>();
     if !tabs.iter().any(|tab| tab.tab_id == current_tab) {
-        tabs.insert(
-            0,
-            SessionTab {
-                tab_id: current_tab.into(),
-                workspace_id: current_workspace.into(),
-                label: "this".into(),
-                number: 0,
-                zoomed: false,
-            },
-        );
+        tabs.push(SessionTab {
+            tab_id: current_tab.into(),
+            workspace_id: current_workspace.into(),
+            label: "this".into(),
+            number: 0,
+            zoomed: false,
+            focused_pane_id: None,
+        });
     }
     (workspaces, tabs)
 }
 #[async_trait]
 impl HerdrClient for CliClient {
     async fn snapshot(&self) -> anyhow::Result<Snapshot> {
-        let origin = Self::origin_pane()?;
-        let layout = Self::read_layout(&origin).await?;
+        self.snapshot_pane(&Self::origin_pane()?).await
+    }
+    async fn snapshot_pane(&self, pane: &str) -> anyhow::Result<Snapshot> {
+        let layout = Self::read_layout(pane).await?;
         if layout.zoomed {
             anyhow::bail!("active tab is zoomed; unzoom before editing")
         }

@@ -6,6 +6,18 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-12
+
+### Added
+
+- Click a tab or workspace chip to edit that tab. If the current tab has
+  unsaved preview changes, show "Apply or Cancel before switching tabs".
+
+### Fixed
+
+- Keep workspace and tab chips in Herdr's display order instead of moving the
+  current one to the front.
+
 ## [0.5.0] - 2026-09-12
 
 ### Added
@@ -104,7 +116,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Pre-apply stale-state validation and post-operation verification.
 - Transaction recovery for ambiguous or partially completed Herdr operations.
 
-[Unreleased]: https://github.com/thuanlm215/herdr-grid/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/thuanlm215/herdr-grid/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/thuanlm215/herdr-grid/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/thuanlm215/herdr-grid/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/thuanlm215/herdr-grid/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/thuanlm215/herdr-grid/compare/v0.3.0...v0.3.1

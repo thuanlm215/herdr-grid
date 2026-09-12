@@ -622,16 +622,12 @@ impl App {
             .iter()
             .any(|workspace| workspace.workspace_id == *current_ws)
         {
-            workspaces.insert(
-                0,
-                SessionWorkspace {
-                    workspace_id: current_ws.clone(),
-                    label: current_ws.clone(),
-                    active_tab_id: Some(self.snapshot.tab_id.clone()),
-                },
-            );
+            workspaces.push(SessionWorkspace {
+                workspace_id: current_ws.clone(),
+                label: current_ws.clone(),
+                active_tab_id: Some(self.snapshot.tab_id.clone()),
+            });
         }
-        workspaces.sort_by_key(|workspace| workspace.workspace_id != *current_ws);
         let mut chips: Vec<_> = workspaces
             .iter()
             .map(|workspace| self.workspace_chip(workspace, workspace.workspace_id == *current_ws))
@@ -642,13 +638,12 @@ impl App {
 
     pub fn tab_chips(&self) -> Vec<DestChip> {
         let workspace_id = self.expanded_workspace_id();
-        let mut tabs: Vec<&SessionTab> = self
+        let tabs: Vec<&SessionTab> = self
             .snapshot
             .tabs
             .iter()
             .filter(|tab| tab.workspace_id == workspace_id)
             .collect();
-        tabs.sort_by_key(|tab| tab.number);
         let mut chips = if tabs.is_empty() && workspace_id == self.snapshot.workspace_id {
             vec![self.tab_chip(&self.snapshot.tab_id, "this", true, false)]
         } else {
@@ -946,6 +941,63 @@ impl App {
         self.dest_hover = None;
         self.dest_cursor = None;
         self.expanded_workspace = None;
+    }
+
+    pub fn adopt_snapshot(&mut self, snapshot: Snapshot) {
+        self.selected = snapshot.focused_pane_id.clone();
+        self.preview = snapshot.tree.clone();
+        self.snapshot = snapshot;
+        self.rehomes.clear();
+        self.undo.clear();
+        self.selected_split.clear();
+        self.preset_picker = None;
+        self.clear_move_state();
+        self.repair_selection();
+    }
+
+    pub fn click_dest(&self, dest: &DestId) -> Result<Option<String>, String> {
+        if self.is_modified() {
+            return Err("Apply or Cancel before switching tabs".into());
+        }
+        match dest {
+            DestId::NewTab { .. } | DestId::NewWorkspace => {
+                Err("Drop a pane here to create it".into())
+            }
+            DestId::Tab(tab_id) if tab_id == &self.snapshot.tab_id => Ok(None),
+            DestId::Tab(tab_id) => self.pane_for_tab(tab_id).map(Some),
+            DestId::Workspace(workspace_id) if workspace_id == &self.snapshot.workspace_id => {
+                Ok(None)
+            }
+            DestId::Workspace(workspace_id) => {
+                let tab_id = self
+                    .snapshot
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.workspace_id == *workspace_id)
+                    .and_then(|workspace| workspace.active_tab_id.as_ref())
+                    .cloned()
+                    .ok_or_else(|| "That workspace has no tabs".to_string())?;
+                if tab_id == self.snapshot.tab_id {
+                    return Ok(None);
+                }
+                self.pane_for_tab(&tab_id).map(Some)
+            }
+        }
+    }
+
+    fn pane_for_tab(&self, tab_id: &str) -> Result<String, String> {
+        let tab = self
+            .snapshot
+            .tabs
+            .iter()
+            .find(|tab| tab.tab_id == tab_id)
+            .ok_or_else(|| "Tab not found".to_string())?;
+        if tab.zoomed {
+            return Err("Unzoom that tab first".into());
+        }
+        tab.focused_pane_id
+            .clone()
+            .ok_or_else(|| "That tab has no panes".to_string())
     }
 }
 

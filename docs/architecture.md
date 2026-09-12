@@ -70,6 +70,10 @@ live `pane.move` calls. Apply relocates those panes first, then runs the
 normal planner on whatever remains in the source tab. An empty remaining
 tree means the source tab will close after the last pane leaves.
 
+Clicking a destination chip loads that tab into the editor when the current
+preview is unmodified. A modified preview stays on the current tab until
+Apply or Cancel. Destination chips keep Herdr's workspace and tab order.
+
 The global custom-layout catalog is a bounded, versioned JSON document under
 `HERDR_PLUGIN_CONFIG_DIR`. It contains geometry and display names only. Loads
 validate schema version, names, tree depth, ratios, slot uniqueness, and

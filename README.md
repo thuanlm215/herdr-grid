@@ -119,6 +119,7 @@ herdr config check && herdr server reload-config
 | Drag pane to center | Swap two panes |
 | Drag pane to edge | Re-parent pane at that edge |
 | Drag pane onto a tab or workspace | Send that pane there on Apply |
+| Click a tab or workspace | Edit that tab (Apply or Cancel first if this tab is modified) |
 | `Tab` / `Shift+Tab` while carrying | Highlight a destination chip |
 | Drag divider | Resize a split |
 | Click pane | Select pane |

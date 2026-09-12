@@ -105,6 +105,10 @@ async fn run(
             match action {
                 Action::Continue => {}
                 Action::Cancel => break Ok(()),
+                Action::SwitchTab { pane_id } => match client.snapshot_pane(&pane_id).await {
+                    Ok(snapshot) => app.adopt_snapshot(snapshot),
+                    Err(error) => app.set_error(error),
+                },
                 Action::Apply => {
                     if !app.is_modified() {
                         break Ok(());
